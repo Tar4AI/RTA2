@@ -2,7 +2,6 @@
 <html lang="th">
 <head>
   <meta charset="utf-8" />
-  <!-- กัน “ขอบขาว”/กินพื้นที่ notch บน iOS -->
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0a1120" />
   <meta name="theme-color" content="#0a1120" media="(prefers-color-scheme: dark)" />
@@ -105,7 +104,6 @@
     </div>
     
     <div class="meters">
-      <!-- FFT -->
       <div class="card">
         <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:2px">
           <b>RTA แบบละเอียด (FFT, Log Frequency)</b>
@@ -121,16 +119,15 @@
         </div>
       </div>
 
-      <!-- OCTAVE -->
       <div class="card">
         <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:2px">
-          <b id="octTitle">RTA แบบ 1/3 Octave (Log Axis)</b>
+          <b id="octTitle">RTA แบบ 1/6 Octave (Linear Axis)</b>
           <span class="row" style="gap:10px;align-items:center">
             <span class="hint" id="labelOct">20 Hz – 20 kHz</span>
             <label>Octave
               <select id="octRes">
-                <option value="3" selected>1/3</option>
-                <option value="6">1/6</option>
+                <option value="3">1/3</option>
+                <option value="6" selected>1/6</option>
               </select>
             </label>
           </span>
@@ -145,7 +142,6 @@
         </div>
       </div>
 
-      <!-- Heatmap -->
       <div class="card" id="heatmapCard">
         <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:2px">
           <b>Spectrogram / Heatmap</b>
@@ -229,7 +225,7 @@
       let guideFFT = null;
       let guideOCT = null;
       let guideHeatmap = null;
-      let octN = 3;
+      let octN = 6;
       let bands = []; // [{fc, fl, fh}]
 
       // Heatmap state
@@ -267,6 +263,12 @@
         const plotH = height - PAD.T - PAD.B;
         return PAD.T + (1 - norm) * plotH;
       }
+      // === แก้ไขฟังก์ชันนี้เพื่อทำ Linear Y-axis สำหรับ Octave ===
+      function mapLinearToY(value, height) {
+        const norm = clamp01(value / 255); // ค่าจาก 0-255
+        const plotH = height - PAD.T - PAD.B;
+        return PAD.T + (1 - norm) * plotH;
+      }
       function mapDbToColor(db) {
         if (db < -60) return getStyle('--heatmap-color-1');
         if (db < -40) return getStyle('--heatmap-color-2');
@@ -291,7 +293,7 @@
           arr.push({ fc, fl: Math.max(fl, fmin), fh: Math.min(fh, fm) });
         }
         labelOct.textContent = `${Math.round(arr[0].fc)} Hz – ${Math.round(arr[arr.length - 1].fc)} Hz`;
-        octTitle.textContent = `RTA แบบ 1/${n} Octave (Log Axis)`;
+        octTitle.textContent = `RTA แบบ 1/${n} Octave (Linear Axis)`;
         return arr;
       }
 
@@ -347,7 +349,7 @@
           ctx.fillText(t >= 1000 ? (t / 1000) + 'k' : t, x - 8, h - LABEL_Y);
         });
       }
-
+      
       function drawPeakLine(ctx, x, h, color, dashed = false) {
         const y0 = PAD.T, y1 = h - PAD.B;
         ctx.save();
@@ -364,7 +366,7 @@
         ctx.beginPath(); ctx.moveTo(x, PAD.T); ctx.lineTo(x, h - PAD.B); ctx.stroke();
         ctx.restore();
       }
-
+      
       // ==== วาด FFT ====
       function drawFFT() {
         const {width: w, height: h} = ctxFFT.canvas;
@@ -486,7 +488,8 @@
           const b = bands[i];
           const xL = mapLogX(b.fl, w), xR = mapLogX(b.fh, w);
           const barW = Math.max(2, xR - xL - 2);
-          const y = mapDbToY(dbfs(vals[i]), h);
+          // === ใช้ mapLinearToY แทน mapDbToY ===
+          const y = mapLinearToY(vals[i], h);
           const plotBottom = h - PAD.B;
           const hh = (plotBottom - y);
           ctxOct.fillRect(xL + 1, y, barW, Math.max(1, hh));
@@ -496,7 +499,8 @@
         ctxOct.beginPath();
         for (let i = 0; i < vals.length; i++) {
           const cx = mapLogX(bands[i].fc, w);
-          const y = mapDbToY(dbfs(peakOct[i] || 0), h);
+          // === ใช้ mapLinearToY แทน mapDbToY ===
+          const y = mapLinearToY(peakOct[i] || 0, h);
           if (i === 0) ctxOct.moveTo(cx, y);
           else ctxOct.lineTo(cx, y);
         }
@@ -529,10 +533,10 @@
         }
 
         // ป้ายด้านนอกกราฟ
-        octPeakText.textContent = `Peak: ${fmtHz(bands[idxNow].fc)} • ${dbfs(vNow).toFixed(1)} dBFS`;
+        octPeakText.textContent = `Peak: ${fmtHz(bands[idxNow].fc)} • ${vNow.toFixed(1)} / 255`;
         if (vHold > 0) {
           octHoldText.style.display = '';
-          octHoldText.textContent = `Hold: ${fmtHz(bands[idxHold].fc)} • ${dbfs(vHold).toFixed(1)} dBFS`;
+          octHoldText.textContent = `Hold: ${fmtHz(bands[idxHold].fc)} • ${vHold.toFixed(1)} / 255`;
         } else {
           octHoldText.style.display = 'none';
         }
@@ -792,59 +796,100 @@
         };
         canvas.addEventListener('touchstart', onDown, { passive: false });
         canvas.addEventListener('touchmove', onMove, { passive: false });
-        canvas.addEventListener('touchend', onUp, { passive: true });
-        canvas.addEventListener('mousedown', onDown);
-        window.addEventListener('mousemove', onMove);
-        window.addEventListener('mouseup', onUp);
-        canvas.addEventListener('contextmenu', e => e.preventDefault());
-      }
-      attachPressGuide(fftCanvas, fftTip, 'fft');
-      attachPressGuide(octCanvas, octTip, 'oct');
-      attachPressGuide(heatmapCanvas, heatmapTip, 'heatmap');
+        canvas.addEventListener('touchend', onUp, { passive: true 
+      });
+      canvas.addEventListener('mousedown', onDown, { passive: false });
+      canvas.addEventListener('mousemove', onMove, { passive: false });
+      canvas.addEventListener('mouseup', onUp, { passive: true });
+      canvas.addEventListener('mouseleave', onUp, { passive: true });
+    }
 
-      // Events
+      // ==== Event listeners ====
       btnStart.addEventListener('click', start);
       btnStop.addEventListener('click', stop);
       btnHold.addEventListener('click', () => {
         holdEnabled = !holdEnabled;
-        btnHold.setAttribute('aria-pressed', String(holdEnabled));
-        btnHold.textContent = holdEnabled ? '📌 Hold Peak: ON' : '📌 Hold Peak: OFF';
+        btnHold.ariaPressed = holdEnabled;
+        btnHold.textContent = `📌 Hold Peak: ${holdEnabled ? 'ON' : 'OFF'}`;
       });
       btnClear.addEventListener('click', () => {
-        if (peakArray) peakArray.fill(0);
-        if (peakOct) peakOct.fill(0);
-        heatmapData = [];
+        peakArray = null;
+        peakOct = null;
+        heatmapData = []; // Clear heatmap data as well
       });
       btnToggleHeatmap.addEventListener('click', () => {
         heatmapEnabled = !heatmapEnabled;
-        btnToggleHeatmap.setAttribute('aria-pressed', String(heatmapEnabled));
-        btnToggleHeatmap.textContent = heatmapEnabled ? '🔥 Heatmap: ON' : '🔥 Heatmap: OFF';
+        btnToggleHeatmap.ariaPressed = heatmapEnabled;
+        btnToggleHeatmap.textContent = `🔥 Heatmap: ${heatmapEnabled ? 'ON' : 'OFF'}`;
+        if (!heatmapEnabled) {
+          // ถ้าปิด heatmap ให้ clear canvas และวาด background + message
+          const w = heatmapCanvas.width;
+          const h = heatmapCanvas.height;
+          ctxHeatmap.clearRect(0, 0, w, h);
+          drawBackground(ctxHeatmap); // ใช้ drawBackground ของ FFT/Octave ได้เลย
+          drawOverlayMessage(ctxHeatmap, w, h);
+        } else {
+          // ถ้าเปิด heatmap ให้วาดทันที
+          lastHeatmapUpdate = 0;
+          drawHeatmap();
+        }
       });
+      
       fftSel.addEventListener('change', () => {
         if (!analyser) return;
         analyser.fftSize = parseInt(fftSel.value, 10);
         dataArray = new Uint8Array(analyser.fftSize);
         freqArray = new Uint8Array(analyser.frequencyBinCount);
         peakArray = new Uint8Array(analyser.frequencyBinCount);
-        bands = genBands(octN);
-        peakOct = new Float32Array(bands.length);
-        heatmapFreqBinMap = genHeatmapBins();
-        heatmapData = []; // Clear heatmap on resize
+        heatmapFreqBinMap = genHeatmapBins(); // Recalculate heatmap bins
+        heatmapData = [];
       });
       smoothing.addEventListener('input', () => {
-        if (analyser) analyser.smoothingTimeConstant = parseFloat(smoothing.value);
+        if (!analyser) return;
+        analyser.smoothingTimeConstant = parseFloat(smoothing.value);
       });
-      octResSel.addEventListener('change', () => {
-        octN = parseInt(octResSel.value, 10);
+      octResSel.addEventListener('change', (e) => {
+        octN = parseInt(e.target.value, 10);
         bands = genBands(octN);
         peakOct = new Float32Array(bands.length);
       });
-      // อนุญาต select/โฟกัสเฉพาะคอนโทรล (กันไฮไลต์ตอนลากบนมือถือ)
-      ['input','select','button','label'].forEach(sel=>{
-        document.querySelectorAll(sel).forEach(el=>{
-          el.style.webkitUserSelect='auto';
+      
+      function drawHeatmapBackground(ctx) {
+        const {width: w, height: h} = ctx.canvas;
+        const plotH = h - PAD.B;
+        ctx.clearRect(0, 0, w, h);
+        // แนวตั้ง log ticks
+        ctx.strokeStyle = GRID_V;
+        const ticks = [20, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 2000, 4000, 8000, 16000];
+        ticks.forEach(t => {
+          const x = mapLogX(t, w);
+          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, plotH); ctx.stroke();
         });
-      });
+        ctx.fillStyle = LABEL;
+        ctx.font = '12px system-ui';
+        ctx.textBaseline = 'alphabetic';
+        [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000].forEach(t => {
+          const x = mapLogX(t, w);
+          ctx.fillText(t >= 1000 ? (t / 1000) + 'k' : t, x - 8, h - LABEL_Y);
+        });
+        // กรอบ
+        ctx.strokeStyle = FRAME;
+        ctx.strokeRect(PAD.L, 0, w - PAD.L - PAD.R, plotH);
+      }
+      
+      // Init
+      drawBackground(ctxFFT);
+      drawBackground(ctxOct);
+      drawHeatmapBackground(ctxHeatmap);
+      drawOverlayMessage(ctxHeatmap, heatmapCanvas.width, heatmapCanvas.height);
+      attachPressGuide(fftCanvas, fftTip, 'fft');
+      attachPressGuide(octCanvas, octTip, 'oct');
+      attachPressGuide(heatmapCanvas, heatmapTip, 'heatmap');
+      
+      // Initial state
+      octResSel.value = 6;
+      octN = 6;
+      octTitle.textContent = `RTA แบบ 1/6 Octave (Linear Axis)`;
     })();
   </script>
 </body>
