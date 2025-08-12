@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#0a1120" media="(prefers-color-scheme: dark)" />
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>Mobile RTA (Octave Linear Y + Heatmap)</title>
+  <title>Mobile RTA (เพิ่มเส้นตั้งพีค + Heatmap + Cursor)</title>
 
   <style>
     :root {
@@ -71,8 +71,8 @@
     <div class="card">
       <div class="row" style="justify-content:space-between">
         <div>
-          <h2 style="margin:0 0 4px 0">Mobile RTA (Octave Linear Y + Heatmap)</h2>
-          <div class="hint">แกน X = Log (20 Hz → 20 kHz) • Octave (แกน Y แบบเชิงเส้น) • Heatmap แสดงความถี่ตามเวลา</div>
+          <h2 style="margin:0 0 4px 0">Mobile RTA (เพิ่มเส้นตั้งพีค + Heatmap)</h2>
+          <div class="hint">แกน X = Log (20 Hz → 20 kHz) • Heatmap แสดงความถี่ในอดีต</div>
         </div>
         <div class="row">
           <button id="btnStart">▶️ เริ่มวัด</button>
@@ -103,7 +103,7 @@
         </div>
       </div>
     </div>
-
+    
     <div class="meters">
       <!-- FFT -->
       <div class="card">
@@ -121,16 +121,24 @@
         </div>
       </div>
 
-      <!-- OCTAVE (Linear Y) -->
+      <!-- OCTAVE -->
       <div class="card">
         <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:2px">
-          <b id="octTitle">RTA แบบ 1/3 Octave (Linear Y)</b>
+          <b id="octTitle">RTA แบบ 1/3 Octave (Log Axis)</b>
           <span class="row" style="gap:10px;align-items:center">
             <span class="hint" id="labelOct">20 Hz – 20 kHz</span>
             <label>Octave
               <select id="octRes">
                 <option value="3" selected>1/3</option>
                 <option value="6">1/6</option>
+              </select>
+            </label>
+            <!-- เพิ่มตัวเลือกแกน Y ใหม่ -->
+            <label> Y-Axis
+              <select id="yScaleOct">
+                <option value="linear127" selected>Linear (0-127)</option>
+                <option value="linear255">Linear (0-255)</option>
+                <option value="dbfs">Log (dBFS)</option>
               </select>
             </label>
           </span>
@@ -157,7 +165,7 @@
         </div>
       </div>
     </div>
-
+    
     <div class="card kv">
       <div><b>ระดับ RMS (ดิบ dBFS)</b><span id="rms">—</span></div>
       <div><b>ความถี่พีคโดยประมาณ</b><span id="peak">—</span></div>
@@ -167,588 +175,810 @@
   </div>
 
   <script>
-  (() => {
-    // พื้นที่เว้นรอบ Plot
-    const PAD = { L: 40, R: 10, T: 10, B: 32 };
-    const LABEL_Y = 10;
+    (() => {
+      // พื้นที่เว้นรอบ Plot
+      const PAD = { L: 40, R: 10, T: 10, B: 32 };
+      const LABEL_Y = 10;
+      const heatmapCanvasHeight = 320;
 
-    // สีกริดจาก CSS variables
-    const css = getComputedStyle(document.documentElement);
-    const GRID_H = css.getPropertyValue('--gridH').trim();
-    const GRID_V = css.getPropertyValue('--gridV').trim();
-    const FRAME  = css.getPropertyValue('--frame').trim();
-    const LABEL  = css.getPropertyValue('--label').trim();
-    const FFT_COLOR  = css.getPropertyValue('--fft').trim();
-    const PEAK_COLOR = css.getPropertyValue('--peak').trim();
-    const HOLD_COLOR = css.getPropertyValue('--hold').trim();
-    const BAR_COLOR  = css.getPropertyValue('--bar').trim();
+      // สีกริดจาก CSS variables
+      const getStyle = (prop) => getComputedStyle(document.documentElement).getPropertyValue(prop).trim();
+      const GRID_H = getStyle('--gridH');
+      const GRID_V = getStyle('--gridV');
+      const FRAME  = getStyle('--frame');
+      const LABEL  = getStyle('--label');
+      const FFT_COLOR = getStyle('--fft');
+      const PEAK_COLOR = getStyle('--peak');
+      const HOLD_COLOR = getStyle('--hold');
+      const BAR_COLOR = getStyle('--bar');
 
-    // DOM
-    const btnStart = document.getElementById('btnStart');
-    const btnStop  = document.getElementById('btnStop');
-    const btnHold  = document.getElementById('btnHold');
-    const btnClear = document.getElementById('btnClear');
-    const btnToggleHeatmap = document.getElementById('btnToggleHeatmap');
+      // DOM
+      const btnStart = document.getElementById('btnStart');
+      const btnStop  = document.getElementById('btnStop');
+      const btnHold  = document.getElementById('btnHold');
+      const btnClear = document.getElementById('btnClear');
+      const btnToggleHeatmap = document.getElementById('btnToggleHeatmap');
+      const fftSel   = document.getElementById('fft');
+      const smoothing= document.getElementById('smoothing');
+      const avgChk   = document.getElementById('avg');
+      const aWeightChk = document.getElementById('aWeight');
+      const ec = document.getElementById('ec');
+      const ns = document.getElementById('ns');
+      const agc = document.getElementById('agc');
+      const fftPeakText = document.getElementById('fftPeakText');
+      const fftHoldText = document.getElementById('fftHoldText');
+      const octPeakText = document.getElementById('octPeakText');
+      const octHoldText = document.getElementById('octHoldText');
+      const fftCanvas = document.getElementById('fftCanvas');
+      const octCanvas = document.getElementById('octCanvas');
+      const heatmapCanvas = document.getElementById('heatmapCanvas');
+      const fftTip = document.getElementById('fftTip');
+      const octTip = document.getElementById('octTip');
+      const heatmapTip = document.getElementById('heatmapTip');
+      const ctxFFT = fftCanvas.getContext('2d');
+      const ctxOct = octCanvas.getContext('2d');
+      const ctxHeatmap = heatmapCanvas.getContext('2d');
+      const labelRate = document.getElementById('labelRate');
+      const labelOct  = document.getElementById('labelOct');
+      const octTitle  = document.getElementById('octTitle');
+      const rmsEl = document.getElementById('rms');
+      const peakEl= document.getElementById('peak');
+      const octResSel = document.getElementById('octRes');
+      // เพิ่ม DOM element สำหรับ Y-Axis
+      const yScaleOctSel = document.getElementById('yScaleOct');
 
-    const fftSel   = document.getElementById('fft');
-    const smoothing= document.getElementById('smoothing');
-    const avgChk   = document.getElementById('avg');
-    const aWeightChk = document.getElementById('aWeight');
-    const ec = document.getElementById('ec');
-    const ns = document.getElementById('ns');
-    const agc = document.getElementById('agc');
+      // Audio state
+      let audioCtx, analyser, micSrc, rafId;
+      let dataArray, freqArray;
+      let sampleRate = 48000;
+      let avgBuffer = null;
+      let running = false;
+      let holdEnabled = false;
+      let peakArray = null;
+      let peakOct   = null;
+      let guideFFT = null;
+      let guideOCT = null;
+      let guideHeatmap = null;
+      let octN = 3;
+      let bands = []; // [{fc, fl, fh}]
+      // เพิ่ม state สำหรับ Y-Axis
+      let yScaleOctMode = 'linear127'; // ตั้งค่าเริ่มต้นเป็น linear 0-127
 
-    const fftPeakText = document.getElementById('fftPeakText');
-    const fftHoldText = document.getElementById('fftHoldText');
-    const octPeakText = document.getElementById('octPeakText');
-    const octHoldText = document.getElementById('octHoldText');
+      // Heatmap state
+      let heatmapData = [];
+      const maxHeatmapData = 200;
+      const heatmapFreqBins = 300;
+      const HEATMAP_UPDATE_RATE_MS = 33;
+      let lastHeatmapUpdate = 0;
+      let heatmapEnabled = true;
+      let heatmapFreqBinMap = null; // Pre-calculated bins for heatmap
 
-    const fftCanvas = document.getElementById('fftCanvas');
-    const octCanvas = document.getElementById('octCanvas');
-    const heatmapCanvas = document.getElementById('heatmapCanvas');
+      // ==== Helpers ====
+      const dbfs = v => 20 * Math.log10(v / 255 + 1e-12);
+      const clamp01 = v => Math.min(1, Math.max(0, v));
+      function aWeighting(f){ const f2=f*f; const ra=(12200**2*f2**2)/((f2+20.6**2)*(f2+12200**2)*Math.sqrt((f2+107.7**2)*(f2+737.9**2))); return 20*Math.log10(ra)+2.0; }
+      function fmtHz(f){ return f>=1000 ? ((f/1000>=10? (f/1000).toFixed(0):(f/1000).toFixed(1))+' kHz') : (Math.round(f)+' Hz'); }
+      const fmax = () => Math.min(sampleRate / 2, 20000);
+      const fmin = 20;
 
-    const fftTip = document.getElementById('fftTip');
-    const octTip = document.getElementById('octTip');
-    const heatmapTip = document.getElementById('heatmapTip');
-
-    const ctxFFT = fftCanvas.getContext('2d');
-    const ctxOct = octCanvas.getContext('2d');
-    const ctxHeatmap = heatmapCanvas.getContext('2d');
-
-    const labelRate = document.getElementById('labelRate');
-    const labelOct  = document.getElementById('labelOct');
-    const octTitle  = document.getElementById('octTitle');
-    const rmsEl = document.getElementById('rms');
-    const peakEl= document.getElementById('peak');
-    const octResSel = document.getElementById('octRes');
-
-    // Audio state
-    let audioCtx, analyser, micSrc, rafId;
-    let dataArray, freqArray;
-    let sampleRate = 48000;
-    let avgBuffer = null;
-    let running = false;
-
-    // Hold Peak
-    let holdEnabled = false;
-    let peakArray = null; // FFT
-    let peakOct   = null; // Octave (linear)
-
-    // Press-guide
-    let guideFFT = null;
-    let guideOCT = null;
-    let guideHeatmap = null;
-
-    // Octave bands / resolution
-    let octN = 3;
-    let bands = []; // [{fc, fl, fh}]
-
-    // Heatmap state
-    let heatmapData = [];
-    const maxHeatmapData = 200;     // จำนวนแถวเวลา
-    const heatmapFreqBins = 300;    // จำนวน bin ความถี่ (แกนนอน)
-    const HEATMAP_UPDATE_RATE_MS = 33;
-    let lastHeatmapUpdate = 0;
-    let heatmapEnabled = true;
-    let heatmapFreqBinMap = null;   // mapping bin FFT -> bin heatmap
-
-    // ==== Helpers =====
-    const dbfs = v => 20*Math.log10(v/255 + 1e-12);
-    const clamp01 = v => Math.min(1, Math.max(0, v));
-    function aWeighting(f){ const f2=f*f; const ra=(12200**2*f2**2)/((f2+20.6**2)*(f2+12200**2)*Math.sqrt((f2+107.7**2)*(f2+737.9**2))); return 20*Math.log10(ra)+2.0; }
-    function fmtHz(f){ return f>=1000 ? ((f/1000>=10? (f/1000).toFixed(0):(f/1000).toFixed(1))+' kHz') : (Math.round(f)+' Hz'); }
-
-    const fmin = 20;
-    const fmax = () => Math.min(sampleRate/2, 20000);
-
-    function mapLogX(f, width){
-      const fm = fmax();
-      const t = (Math.log10(Math.max(f,fmin)) - Math.log10(fmin)) / (Math.log10(fm) - Math.log10(fmin));
-      return PAD.L + t * (width - PAD.L - PAD.R);
-    }
-    function xToFreq(x, width){
-      const fm = fmax();
-      const plotW = width - PAD.L - PAD.R;
-      const t = clamp01((x - PAD.L) / plotW);
-      const lf = Math.log10(fmin) + t * (Math.log10(fm) - Math.log10(fmin));
-      return Math.pow(10, lf);
-    }
-    function mapDbToY(db, height){
-      const norm = clamp01((db + 100)/100);
-      const plotH = height - PAD.T - PAD.B;
-      return PAD.T + (1 - norm) * plotH;
-    }
-    function mapDbToColor(db){
-      if (db < -60) return getComputedStyle(document.documentElement).getPropertyValue('--heatmap-color-1').trim();
-      if (db < -40) return getComputedStyle(document.documentElement).getPropertyValue('--heatmap-color-2').trim();
-      if (db < -20) return getComputedStyle(document.documentElement).getPropertyValue('--heatmap-color-3').trim();
-      if (db < -5)  return getComputedStyle(document.documentElement).getPropertyValue('--heatmap-color-4').trim();
-      return getComputedStyle(document.documentElement).getPropertyValue('--heatmap-color-5').trim();
-    }
-
-    // --- Linear Y helpers for Octave ---
-    let linMaxSoft = 128;           // soft auto-scale
-    const LIN_MIN_MAX = 32;         // กัน max ต่ำเกินไป
-    function mapLinToY(v, height){
-      const plotH = height - PAD.T - PAD.B;
-      const maxV = Math.max(linMaxSoft, LIN_MIN_MAX);
-      const t = Math.min(1, Math.max(0, v / maxV));
-      return PAD.T + (1 - t) * plotH;
-    }
-
-    // สร้างย่านแบบ 1/n octave (ศูนย์อิง 1 kHz)
-    function genBands(n){
-      const r = Math.pow(2, 1/n);
-      const fm = fmax();
-      const kmin = Math.ceil(Math.log(fmin/1000)/Math.log(r));
-      const kmax = Math.floor(Math.log(fm/1000)/Math.log(r));
-      const edgeHalf = Math.pow(2, 1/(2*n));
-      const arr = [];
-      for(let k=kmin;k<=kmax;k++){
-        const fc = 1000 * Math.pow(r, k);
-        const fl = fc / edgeHalf;
-        const fh = fc * edgeHalf;
-        if (fh < fmin || fl > fm) continue;
-        arr.push({ fc, fl: Math.max(fl, fmin), fh: Math.min(fh, fm) });
+      // map <-> screen
+      function mapLogX(f, width) {
+        const fm = fmax();
+        const t = (Math.log10(Math.max(f, fmin)) - Math.log10(fmin)) / (Math.log10(fm) - Math.log10(fmin));
+        return PAD.L + t * (width - PAD.L - PAD.R);
       }
-      labelOct.textContent = `${Math.round(arr[0].fc)} Hz – ${Math.round(arr[arr.length-1].fc)} Hz`;
-      octTitle.textContent = `RTA แบบ 1/${n} Octave (Linear Y)`;
-      return arr;
-    }
-
-    // Pre-calc heatmap bins
-    function genHeatmapBins(){
-      const fm = fmax();
-      const fpb = sampleRate / analyser.fftSize;
-      const logFmin = Math.log10(fmin);
-      const logFmax = Math.log10(fm);
-      const bins = [];
-      for(let i=0;i<heatmapFreqBins;i++){
-        const logFStart = logFmin + (i/heatmapFreqBins)*(logFmax-logFmin);
-        const logFEnd   = logFmin + ((i+1)/heatmapFreqBins)*(logFmax-logFmin);
-        const fStart = Math.pow(10, logFStart);
-        const fEnd   = Math.pow(10, logFEnd);
-        const binStart = Math.max(0, Math.floor(fStart / fpb));
-        const binEnd   = Math.min(analyser.frequencyBinCount-1, Math.ceil(fEnd / fpb));
-        bins.push({binStart, binEnd, fStart, fEnd});
+      function xToFreq(x, width) {
+        const fm = fmax();
+        const plotW = width - PAD.L - PAD.R;
+        const t = clamp01((x - PAD.L) / plotW);
+        const lf = Math.log10(fmin) + t * (Math.log10(fm) - Math.log10(fmin));
+        return Math.pow(10, lf);
       }
-      return bins;
-    }
-
-    // ==== พื้นหลัง/กริด (FFT & Octave) ====
-    function drawBackground(ctx){
-      const {width:w, height:h} = ctx.canvas;
-      ctx.clearRect(0,0,w,h);
-      const plotH = h - PAD.T - PAD.B;
-
-      // แนวนอน
-      ctx.strokeStyle = GRID_H;
-      for(let i=0;i<6;i++){
-        const y = PAD.T + (i/5)*plotH;
-        ctx.beginPath(); ctx.moveTo(PAD.L,y); ctx.lineTo(w-PAD.R,y); ctx.stroke();
+      function mapDbToY(db, height) {
+        const norm = clamp01((db + 100) / 100);
+        const plotH = height - PAD.T - PAD.B;
+        return PAD.T + (1 - norm) * plotH;
       }
-      // แนวตั้ง log ticks
-      ctx.strokeStyle = GRID_V;
-      const ticks=[20,31.5,40,50,63,80,100,125,160,200,250,315,400,500,630,800,1000,2000,4000,8000,16000];
-      ticks.forEach(t=>{
-        const x = mapLogX(t, w);
-        ctx.beginPath(); ctx.moveTo(x, PAD.T); ctx.lineTo(x, PAD.T+plotH); ctx.stroke();
-      });
-
-      // กรอบ
-      ctx.strokeStyle = FRAME;
-      ctx.strokeRect(PAD.L, PAD.T, w-PAD.L-PAD.R, plotH);
-
-      // ป้ายแกน X
-      ctx.fillStyle = LABEL;
-      ctx.font = '12px system-ui';
-      ctx.textBaseline = 'alphabetic';
-      [31.5,63,125,250,500,1000,2000,4000,8000,16000].forEach(t=>{
-        const x=mapLogX(t,w);
-        ctx.fillText(t>=1000?(t/1000)+'k':t, x-8, h-LABEL_Y);
-      });
-    }
-
-    function drawPeakLine(ctx, x, h, color, dashed=false){
-      ctx.save();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1;
-      if(dashed) ctx.setLineDash([5,5]);
-      ctx.beginPath(); ctx.moveTo(PAD.T, PAD.T); // dummy to reset join
-      ctx.moveTo(x, PAD.T); ctx.lineTo(x, h-PAD.B); ctx.stroke();
-      ctx.restore();
-    }
-    function drawGuide(ctx, x, h){
-      ctx.save();
-      ctx.strokeStyle = 'rgba(96,165,250,.75)';
-      ctx.setLineDash([4,4]);
-      ctx.beginPath(); ctx.moveTo(x, PAD.T); ctx.lineTo(x, h-PAD.B); ctx.stroke();
-      ctx.restore();
-    }
-
-    // ==== FFT ====
-    function drawFFT(){
-      const {width:w,height:h} = ctxFFT.canvas;
-      drawBackground(ctxFFT);
-      if(!freqArray) return;
-
-      const N = freqArray.length;
-      const fpb = sampleRate / (2*N);
-
-      // peak (current)
-      let peakBin=0, peakVal=-Infinity;
-      for(let i=0;i<N;i++){ if(freqArray[i]>peakVal){ peakVal=freqArray[i]; peakBin=i; } }
-      const peakFreqNow = peakBin*fpb;
-      const peakDbNow = dbfs(freqArray[peakBin] || 0);
-      peakEl.textContent = Math.round(peakFreqNow) + ' Hz';
-
-      if(!peakArray || peakArray.length!==N) peakArray=new Uint8Array(N);
-      if(holdEnabled) for(let i=0;i<N;i++) peakArray[i] = Math.max(peakArray[i], freqArray[i]);
-
-      // current
-      ctxFFT.beginPath();
-      let started=false;
-      for(let i=1;i<N;i++){
-        const f=i*fpb; if(f<20) continue; if(f>20000) break;
-        const x=mapLogX(f,w);
-        const y=mapDbToY(dbfs(freqArray[i]), h);
-        if(!started){ ctxFFT.moveTo(x,y); started=true; } else ctxFFT.lineTo(x,y);
+      // เพิ่มฟังก์ชัน map สำหรับ Linear Scale
+      function mapLinearToY(value, maxVal, height) {
+        const norm = clamp01(value / maxVal);
+        const plotH = height - PAD.T - PAD.B;
+        return PAD.T + (1 - norm) * plotH;
       }
-      ctxFFT.strokeStyle=FFT_COLOR; ctxFFT.lineWidth=2; ctxFFT.stroke();
-
-      // peak-hold (จาง)
-      ctxFFT.beginPath(); started=false;
-      for(let i=1;i<N;i++){
-        const f=i*fpb; if(f<20) continue; if(f>20000) break;
-        const x=mapLogX(f,w);
-        const y=mapDbToY(dbfs(peakArray[i]||0), h);
-        if(!started){ ctxFFT.moveTo(x,y); started=true; } else ctxFFT.lineTo(x,y);
+      function mapDbToColor(db) {
+        if (db < -60) return getStyle('--heatmap-color-1');
+        if (db < -40) return getStyle('--heatmap-color-2');
+        if (db < -20) return getStyle('--heatmap-color-3');
+        if (db < -5) return getStyle('--heatmap-color-4');
+        return getStyle('--heatmap-color-5');
       }
-      ctxFFT.save(); ctxFFT.globalAlpha=0.35; ctxFFT.strokeStyle=PEAK_COLOR; ctxFFT.lineWidth=1.25; ctxFFT.stroke(); ctxFFT.restore();
 
-      // เส้นพีค (current + hold)
-      drawPeakLine(ctxFFT, mapLogX(peakFreqNow, w), h, 'rgba(96,165,250,0.6)', false);
-      let holdBin=0, holdVal=0;
-      for(let i=0;i<N;i++) if(peakArray[i]>holdVal){ holdVal=peakArray[i]; holdBin=i; }
-      if(holdVal>0) drawPeakLine(ctxFFT, mapLogX(holdBin*fpb, w), h, 'rgba(250,204,21,0.55)', true);
-
-      // badges
-      fftPeakText.textContent = `Peak: ${fmtHz(peakFreqNow)} • ${peakDbNow.toFixed(1)} dBFS`;
-      if(holdVal>0){
-        fftHoldText.style.display='';
-        fftHoldText.textContent=`Hold: ${fmtHz(holdBin*fpb)} • ${dbfs(holdVal).toFixed(1)} dBFS`;
-      }else fftHoldText.style.display='none';
-
-      if(guideFFT) drawGuide(ctxFFT, guideFFT.xPx, h);
-    }
-
-    // ==== Octave (Linear Y) ====
-    function drawOctave(){
-      const {width:w, height:h} = ctxOct.canvas;
-      drawBackground(ctxOct);
-      if(!freqArray || !bands.length) return;
-
-      const N = freqArray.length;
-      const fpb = sampleRate / (2*N);
-
-      // ค่าเฉลี่ยต่อย่าน (linear)
-      const vals = bands.map(b=>{
-        const s=Math.max(0, Math.floor(b.fl/fpb));
-        const e=Math.min(N-1, Math.ceil(b.fh/fpb));
-        let sum=0, cnt=0; for(let i=s;i<=e;i++){ sum+=freqArray[i]; cnt++; }
-        let v = cnt ? (sum/cnt) : 0;          // 0..255
-        if(aWeightChk.checked){
-          const Aw = Math.pow(10, aWeighting(b.fc)/20); // linear gain
-          v *= Aw;
+      // สร้างย่านแบบ 1/n octave (ศูนย์อิง 1 kHz)
+      function genBands(n) {
+        const r = Math.pow(2, 1 / n);
+        const fm = fmax();
+        const kmin = Math.ceil(Math.log(fmin / 1000) / Math.log(r));
+        const kmax = Math.floor(Math.log(fm / 1000) / Math.log(r));
+        const edgeHalf = Math.pow(2, 1 / (2 * n));
+        const arr = [];
+        for (let k = kmin; k <= kmax; k++) {
+          const fc = 1000 * Math.pow(r, k);
+          const fl = fc / edgeHalf;
+          const fh = fc * edgeHalf;
+          if (fh < fmin || fl > fm) continue;
+          arr.push({ fc, fl: Math.max(fl, fmin), fh: Math.min(fh, fm) });
         }
-        return v;
-      });
-
-      // อัปเดตสเกลเชิงเส้นแบบนุ่ม ๆ
-      const frameMax = vals.reduce((a,b)=>Math.max(a,b), 1);
-      linMaxSoft = 0.90*linMaxSoft + 0.10*frameMax;
-
-      if(!peakOct || peakOct.length!==vals.length) peakOct=new Float32Array(vals.length);
-      if(holdEnabled) for(let i=0;i<vals.length;i++) peakOct[i]=Math.max(peakOct[i], vals[i]);
-
-      // แท่งปัจจุบัน (linear Y)
-      ctxOct.fillStyle = BAR_COLOR;
-      for(let i=0;i<vals.length;i++){
-        const b=bands[i];
-        const xL=mapLogX(b.fl,w), xR=mapLogX(b.fh,w);
-        const barW=Math.max(2, xR-xL-2);
-        const y=mapLinToY(vals[i], h);
-        const plotBottom=h-PAD.B;
-        const hh=plotBottom-y;
-        ctxOct.fillRect(xL+1, y, barW, Math.max(1, hh));
+        labelOct.textContent = `${Math.round(arr[0].fc)} Hz – ${Math.round(arr[arr.length - 1].fc)} Hz`;
+        octTitle.textContent = `RTA แบบ 1/${n} Octave`;
+        return arr;
       }
 
-      // เส้น hold (จาง) ใช้ scale linear
-      ctxOct.beginPath();
-      for(let i=0;i<vals.length;i++){
-        const cx=mapLogX(bands[i].fc, w);
-        const y=mapLinToY(peakOct[i]||0, h);
-        if(i===0) ctxOct.moveTo(cx,y); else ctxOct.lineTo(cx,y);
+      // Pre-calculate heatmap bins for efficiency
+      function genHeatmapBins() {
+        const fm = fmax();
+        const fpb = sampleRate / analyser.fftSize;
+        const logFmin = Math.log10(fmin);
+        const logFmax = Math.log10(fm);
+        const bins = [];
+        for (let i = 0; i < heatmapFreqBins; i++) {
+          const logFStart = logFmin + (i / heatmapFreqBins) * (logFmax - logFmin);
+          const logFEnd = logFmin + ((i + 1) / heatmapFreqBins) * (logFmax - logFmin);
+          const fStart = Math.pow(10, logFStart);
+          const fEnd = Math.pow(10, logFEnd);
+          const binStart = Math.max(0, Math.floor(fStart / fpb));
+          const binEnd = Math.min(analyser.frequencyBinCount - 1, Math.ceil(fEnd / fpb));
+          bins.push({ binStart, binEnd, fStart, fEnd });
+        }
+        return bins;
       }
-      ctxOct.save(); ctxOct.globalAlpha=0.45; ctxOct.strokeStyle=HOLD_COLOR; ctxOct.lineWidth=1.5; ctxOct.stroke(); ctxOct.restore();
 
-      // ตำแหน่งพีค (ตาม linear magnitude)
-      let idxNow=0, vNow=-1; for(let i=0;i<vals.length;i++){ if(vals[i]>vNow){ vNow=vals[i]; idxNow=i; } }
-      drawPeakLine(ctxOct, mapLogX(bands[idxNow].fc, w), h, 'rgba(96,165,250,0.6)', false);
+      // ==== พื้นหลัง/กริด (สำหรับ FFT) ====
+      function drawFFTBackground(ctx) {
+        const {width: w, height: h} = ctx.canvas;
+        ctx.clearRect(0, 0, w, h);
+        const plotH = h - PAD.T - PAD.B;
 
-      let idxHold=0, vHold=0; for(let i=0;i<peakOct.length;i++){ if(peakOct[i]>vHold){ vHold=peakOct[i]; idxHold=i; } }
-      if(vHold>0) drawPeakLine(ctxOct, mapLogX(bands[idxHold].fc, w), h, 'rgba(250,204,21,0.55)', true);
+        // แนวนอน (dBFS)
+        ctx.strokeStyle = GRID_H;
+        for (let i = 0; i < 6; i++) {
+          const y = PAD.T + (i / 5) * plotH;
+          ctx.beginPath(); ctx.moveTo(PAD.L, y); ctx.lineTo(w - PAD.R, y); ctx.stroke();
+        }
+        // แนวตั้ง log ticks
+        ctx.strokeStyle = GRID_V;
+        const ticks = [20, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 2000, 4000, 8000, 16000];
+        ticks.forEach(t => {
+          const x = mapLogX(t, w);
+          ctx.beginPath(); ctx.moveTo(x, PAD.T); ctx.lineTo(x, PAD.T + plotH); ctx.stroke();
+        });
 
-      // badges (ยังคงรายงาน dBFS เพื่อคุ้นมือ)
-      octPeakText.textContent = `Peak: ${fmtHz(bands[idxNow].fc)} • ${dbfs(vNow).toFixed(1)} dBFS`;
-      if(vHold>0){ octHoldText.style.display=''; octHoldText.textContent=`Hold: ${fmtHz(bands[idxHold].fc)} • ${dbfs(vHold).toFixed(1)} dBFS`; }
-      else octHoldText.style.display='none';
+        // กรอบ
+        ctx.strokeStyle = FRAME;
+        ctx.strokeRect(PAD.L, PAD.T, w - PAD.L - PAD.R, plotH);
 
-      if(guideOCT) drawGuide(ctxOct, guideOCT.xPx, h);
-    }
+        // ป้ายแกน X
+        ctx.fillStyle = LABEL;
+        ctx.font = '12px system-ui';
+        ctx.textBaseline = 'alphabetic';
+        [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000].forEach(t => {
+          const x = mapLogX(t, w);
+          ctx.fillText(t >= 1000 ? (t / 1000) + 'k' : t, x - 8, h - LABEL_Y);
+        });
+      }
 
-    // ==== Heatmap ====
-    function drawHeatmapBackground(ctx){
-      const {width:w, height:h} = ctx.canvas;
-      ctx.clearRect(0,0,w,h);
+      // ==== พื้นหลัง/กริด (สำหรับ Octave, แยกออกมาเพื่อให้ปรับแกน Y ได้) ====
+      function drawOctaveBackground(ctx) {
+        const {width: w, height: h} = ctx.canvas;
+        ctx.clearRect(0, 0, w, h);
+        const plotH = h - PAD.T - PAD.B;
 
-      // พื้นที่แสดงข้อมูล (ทั้งผืน) ไม่ต้องมีกรอบ, ใส่กริดตั้งจาง ๆ
-      ctx.strokeStyle = GRID_V;
-      const ticks=[20,31.5,40,50,63,80,100,125,160,200,250,315,400,500,630,800,1000,2000,4000,8000,16000];
-      ticks.forEach(t=>{
-        const x = mapLogX(t, w);
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h-PAD.B); ctx.stroke();
-      });
+        // แนวนอน (ตามโหมดที่เลือก)
+        ctx.strokeStyle = GRID_H;
+        let yLabels = [];
+        if (yScaleOctMode === 'dbfs') {
+          yLabels = [-100, -80, -60, -40, -20, 0];
+        } else if (yScaleOctMode === 'linear127') {
+          yLabels = [0, 25, 50, 75, 100, 127];
+        } else { // linear255
+          yLabels = [0, 50, 100, 150, 200, 255];
+        }
 
-      // ป้ายแกน X ด้านล่าง
-      ctx.fillStyle = LABEL;
-      ctx.font = '12px system-ui';
-      ctx.textBaseline = 'alphabetic';
-      [31.5,63,125,250,500,1000,2000,4000,8000,16000].forEach(t=>{
-        const x=mapLogX(t,w);
-        ctx.fillText(t>=1000?(t/1000)+'k':t, x-8, h-LABEL_Y);
-      });
-    }
+        yLabels.forEach((label, i) => {
+          const y = PAD.T + (i / (yLabels.length - 1)) * plotH;
+          ctx.beginPath(); ctx.moveTo(PAD.L, y); ctx.lineTo(w - PAD.R, y); ctx.stroke();
+          ctx.fillStyle = LABEL;
+          ctx.fillText(label, PAD.L - 25, y + 4);
+        });
+        
+        // แนวตั้ง log ticks
+        ctx.strokeStyle = GRID_V;
+        const ticks = [20, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 2000, 4000, 8000, 16000];
+        ticks.forEach(t => {
+          const x = mapLogX(t, w);
+          ctx.beginPath(); ctx.moveTo(x, PAD.T); ctx.lineTo(x, PAD.T + plotH); ctx.stroke();
+        });
 
-    function drawHeatmap(){
-      const {width:w, height:h} = ctxHeatmap.canvas;
-      const plotH = h - PAD.B;
+        // กรอบ
+        ctx.strokeStyle = FRAME;
+        ctx.strokeRect(PAD.L, PAD.T, w - PAD.L - PAD.R, plotH);
 
-      if(!freqArray || !heatmapFreqBinMap) return;
+        // ป้ายแกน X
+        ctx.fillStyle = LABEL;
+        ctx.font = '12px system-ui';
+        ctx.textBaseline = 'alphabetic';
+        [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000].forEach(t => {
+          const x = mapLogX(t, w);
+          ctx.fillText(t >= 1000 ? (t / 1000) + 'k' : t, x - 8, h - LABEL_Y);
+        });
+      }
 
-      // คำนวณเฟรมใหม่
-      const currentData = heatmapFreqBinMap.map(bin=>{
-        let sum=0, count=0;
-        for(let j=bin.binStart;j<=bin.binEnd;j++){ sum+=freqArray[j]; count++; }
-        const avgDb = count>0 ? dbfs(sum/count) : -100;
-        return { db: avgDb, fStart: bin.fStart, fEnd: bin.fEnd };
-      });
+      function drawPeakLine(ctx, x, h, color, dashed = false) {
+        const y0 = PAD.T, y1 = h - PAD.B;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        if (dashed) ctx.setLineDash([5, 5]);
+        ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
+        ctx.restore();
+      }
+      
+      function drawGuide(ctx, x, h) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(96,165,250,.75)'; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(x, PAD.T); ctx.lineTo(x, h - PAD.B); ctx.stroke();
+        ctx.restore();
+      }
 
-      // เก็บประวัติ (บนลงล่าง)
-      heatmapData.unshift(currentData);
-      if(heatmapData.length > maxHeatmapData) heatmapData.pop();
+      // ==== วาด FFT ====
+      function drawFFT() {
+        const {width: w, height: h} = ctxFFT.canvas;
+        drawFFTBackground(ctxFFT);
+        if (!freqArray) return;
 
-      // วาดพื้นหลังกริด/ป้ายก่อน
-      ctxHeatmap.clearRect(0,0,w,h);
-      drawHeatmapBackground(ctxHeatmap);
+        const N = freqArray.length;
+        const fpb = sampleRate / (2 * N);
 
-      // วาดข้อมูล
-      const timeScale = plotH / maxHeatmapData;
-      for(let i=0;i<heatmapData.length;i++){
-        const y = i * timeScale;
-        const frameData = heatmapData[i];
-        for(let j=0;j<frameData.length;j++){
-          const {fStart,fEnd,db} = frameData[j];
-          const xL = mapLogX(fStart, w);
-          const xR = mapLogX(fEnd,   w);
-          const barW = Math.max(1, xR-xL);
-          ctxHeatmap.fillStyle = mapDbToColor(db);
-          ctxHeatmap.fillRect(xL, y, barW, timeScale);
+        // peak (current)
+        let peakBin = 0, peakVal = -Infinity;
+        for (let i = 0; i < N; i++) {
+          if (freqArray[i] > peakVal) {
+            peakVal = freqArray[i];
+            peakBin = i;
+          }
+        }
+        const peakFreqNow = peakBin * fpb;
+        const peakDbNow = dbfs(freqArray[peakBin] || 0);
+        peakEl.textContent = Math.round(peakFreqNow) + ' Hz';
+
+        if (!peakArray || peakArray.length !== N) peakArray = new Uint8Array(N);
+        if (holdEnabled) for (let i = 0; i < N; i++) peakArray[i] = Math.max(peakArray[i], freqArray[i]);
+
+        // current (เขียว)
+        ctxFFT.beginPath();
+        let started = false;
+        for (let i = 1; i < N; i++) {
+          const f = i * fpb;
+          if (f < 20) continue;
+          if (f > 20000) break;
+          const x = mapLogX(f, w);
+          const y = mapDbToY(dbfs(freqArray[i]), h);
+          if (!started) {
+            ctxFFT.moveTo(x, y);
+            started = true;
+          } else ctxFFT.lineTo(x, y);
+        }
+        ctxFFT.strokeStyle = FFT_COLOR;
+        ctxFFT.lineWidth = 2;
+        ctxFFT.stroke();
+
+        // peak-hold (ม่วง จาง)
+        ctxFFT.beginPath();
+        started = false;
+        for (let i = 1; i < N; i++) {
+          const f = i * fpb;
+          if (f < 20) continue;
+          if (f > 20000) break;
+          const x = mapLogX(f, w);
+          const y = mapDbToY(dbfs(peakArray[i] || 0), h);
+          if (!started) {
+            ctxFFT.moveTo(x, y);
+            started = true;
+          } else ctxFFT.lineTo(x, y);
+        }
+        ctxFFT.save();
+        ctxFFT.globalAlpha = 0.35;
+        ctxFFT.strokeStyle = PEAK_COLOR;
+        ctxFFT.lineWidth = 1.25;
+        ctxFFT.stroke();
+        ctxFFT.restore();
+
+        // เส้นพีค (current + hold)
+        const xPeakNow = mapLogX(peakFreqNow, w);
+        drawPeakLine(ctxFFT, xPeakNow, h, 'rgba(96,165,250,0.6)', false);
+        let holdBin = 0, holdVal = 0;
+        for (let i = 0; i < N; i++) {
+          if (peakArray[i] > holdVal) {
+            holdVal = peakArray[i];
+            holdBin = i;
+          }
+        }
+        if (holdVal > 0) {
+          drawPeakLine(ctxFFT, mapLogX(holdBin * fpb, w), h, 'rgba(250,204,21,0.55)', true);
+        }
+
+        // ป้ายด้านนอกกราฟ
+        fftPeakText.textContent = `Peak: ${fmtHz(peakFreqNow)} • ${peakDbNow.toFixed(1)} dBFS`;
+        if (holdVal > 0) {
+          fftHoldText.style.display = '';
+          fftHoldText.textContent = `Hold: ${fmtHz(holdBin * fpb)} • ${dbfs(holdVal).toFixed(1)} dBFS`;
+        } else {
+          fftHoldText.style.display = 'none';
+        }
+
+        if (guideFFT) {
+          drawGuide(ctxFFT, guideFFT.xPx, h);
         }
       }
 
-      if(guideHeatmap){
-        ctxHeatmap.save();
-        ctxHeatmap.strokeStyle='rgba(96,165,250,.75)';
-        ctxHeatmap.setLineDash([4,4]);
-        ctxHeatmap.beginPath(); ctxHeatmap.moveTo(guideHeatmap.xPx, 0); ctxHeatmap.lineTo(guideHeatmap.xPx, plotH); ctxHeatmap.stroke();
-        ctxHeatmap.restore();
+      // ==== วาด Octave ====
+      function drawOctave() {
+        const {width: w, height: h} = ctxOct.canvas;
+        drawOctaveBackground(ctxOct); // ใช้ background ใหม่
+        if (!freqArray || !bands.length) return;
+
+        const N = freqArray.length;
+        const fpb = sampleRate / (2 * N);
+
+        const vals = bands.map(b => {
+          const s = Math.max(0, Math.floor(b.fl / fpb)), e = Math.min(N - 1, Math.ceil(b.fh / fpb));
+          let sum = 0, cnt = 0;
+          for (let i = s; i <= e; i++) {
+            sum += freqArray[i];
+            cnt++;
+          }
+          let v = cnt ? (sum / cnt) : 0;
+          if (aWeightChk.checked) v *= Math.pow(10, aWeighting(b.fc) / 20);
+          return v;
+        });
+
+        if (!peakOct || peakOct.length !== vals.length) peakOct = new Float32Array(vals.length);
+        if (holdEnabled) for (let i = 0; i < vals.length; i++) peakOct[i] = Math.max(peakOct[i], vals[i]);
+
+        // กำหนด Y-mapping ตามโหมดที่เลือก
+        let mapYFunc, maxValY, peakYUnit;
+        if (yScaleOctMode === 'dbfs') {
+          mapYFunc = (val, h) => mapDbToY(dbfs(val), h);
+          maxValY = 255; // For dBFS conversion
+          peakYUnit = ' dBFS';
+        } else if (yScaleOctMode === 'linear127') {
+          mapYFunc = (val, h) => mapLinearToY(val, 127, h);
+          maxValY = 127;
+          peakYUnit = '';
+        } else { // linear255
+          mapYFunc = (val, h) => mapLinearToY(val, 255, h);
+          maxValY = 255;
+          peakYUnit = '';
+        }
+
+
+        // แท่งปัจจุบัน (เขียว)
+        ctxOct.fillStyle = BAR_COLOR;
+        for (let i = 0; i < vals.length; i++) {
+          const b = bands[i];
+          const xL = mapLogX(b.fl, w), xR = mapLogX(b.fh, w);
+          const barW = Math.max(2, xR - xL - 2);
+          const y = mapYFunc(vals[i], h); // ใช้ mapYFunc ที่เลือก
+          const plotBottom = h - PAD.B;
+          const hh = (plotBottom - y);
+          ctxOct.fillRect(xL + 1, y, barW, Math.max(1, hh));
+        }
+
+        // เส้นโฮลด์แบบจาง
+        ctxOct.beginPath();
+        for (let i = 0; i < vals.length; i++) {
+          const cx = mapLogX(bands[i].fc, w);
+          const y = mapYFunc(peakOct[i] || 0, h); // ใช้ mapYFunc ที่เลือก
+          if (i === 0) ctxOct.moveTo(cx, y);
+          else ctxOct.lineTo(cx, y);
+        }
+        ctxOct.save();
+        ctxOct.globalAlpha = 0.45;
+        ctxOct.strokeStyle = HOLD_COLOR;
+        ctxOct.lineWidth = 1.5;
+        ctxOct.stroke();
+        ctxOct.restore();
+
+        // ตำแหน่งพีค (current + hold)
+        let idxNow = 0, vNow = -1;
+        for (let i = 0; i < vals.length; i++) {
+          if (vals[i] > vNow) {
+            vNow = vals[i];
+            idxNow = i;
+          }
+        }
+        drawPeakLine(ctxOct, mapLogX(bands[idxNow].fc, w), h, 'rgba(96,165,250,0.6)', false);
+
+        let idxHold = 0, vHold = 0;
+        for (let i = 0; i < peakOct.length; i++) {
+          if (peakOct[i] > vHold) {
+            vHold = peakOct[i];
+            idxHold = i;
+          }
+        }
+        if (vHold > 0) {
+          drawPeakLine(ctxOct, mapLogX(bands[idxHold].fc, w), h, 'rgba(250,204,21,0.55)', true);
+        }
+
+        // ป้ายด้านนอกกราฟ
+        let peakTextNow, peakTextHold;
+        if (yScaleOctMode === 'dbfs') {
+            peakTextNow = `${dbfs(vNow).toFixed(1)} dBFS`;
+            peakTextHold = `${dbfs(vHold).toFixed(1)} dBFS`;
+        } else {
+            peakTextNow = vNow.toFixed(1);
+            peakTextHold = vHold.toFixed(1);
+        }
+
+        octPeakText.textContent = `Peak: ${fmtHz(bands[idxNow].fc)} • ${peakTextNow}`;
+        if (vHold > 0) {
+          octHoldText.style.display = '';
+          octHoldText.textContent = `Hold: ${fmtHz(bands[idxHold].fc)} • ${peakTextHold}`;
+        } else {
+          octHoldText.style.display = 'none';
+        }
+
+        if (guideOCT) {
+          drawGuide(ctxOct, guideOCT.xPx, h);
+        }
       }
-    }
-
-    // ==== RMS ====
-    function updateRMS(){
-      if(!dataArray) return;
-      let sum=0; for(let i=0;i<dataArray.length;i++){ const v=(dataArray[i]-128)/128; sum+=v*v; }
-      const rms=Math.sqrt(sum/dataArray.length);
-      const db=20*Math.log10(rms+1e-12);
-      rmsEl.textContent = db.toFixed(1)+' dBFS';
-    }
-
-    function loop(){
-      if(!running) return;
-      analyser.getByteTimeDomainData(dataArray);
-      analyser.getByteFrequencyData(freqArray);
-
-      if(avgChk.checked){
-        if(!avgBuffer || avgBuffer.length!==freqArray.length) avgBuffer=new Float32Array(freqArray.length);
-        const alpha=0.5;
-        for(let i=0;i<freqArray.length;i++){ avgBuffer[i]=alpha*avgBuffer[i]+(1-alpha)*freqArray[i]; freqArray[i]=avgBuffer[i]; }
+      
+      // วาดข้อความทับบน Canvas
+      function drawOverlayMessage(ctx, w, h) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.font = '24px system-ui';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Heatmap OFF', w / 2, h / 2);
       }
 
-      drawFFT();
-      drawOctave();
-      updateRMS();
-
-      const now = performance.now();
-      if(heatmapEnabled && now-lastHeatmapUpdate>=HEATMAP_UPDATE_RATE_MS){
-        drawHeatmap();
-        lastHeatmapUpdate = now;
-      }else if(!heatmapEnabled){
-        ctxHeatmap.clearRect(0,0,heatmapCanvas.width,heatmapCanvas.height);
-        drawHeatmapBackground(ctxHeatmap);
-        // ข้อความ Heatmap OFF
-        ctxHeatmap.fillStyle='rgba(255,255,255,0.45)';
-        ctxHeatmap.font='24px system-ui';
-        ctxHeatmap.textAlign='center'; ctxHeatmap.textBaseline='middle';
-        ctxHeatmap.fillText('Heatmap OFF', heatmapCanvas.width/2, (heatmapCanvas.height-PAD.B)/2);
+      // วาดเส้น Cursor ทับบน Heatmap
+      function drawHeatmapGuide(ctx, x, h) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(96,165,250,.75)';
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h - PAD.B);
+        ctx.stroke();
+        ctx.restore();
       }
 
-      rafId = requestAnimationFrame(loop);
-    }
+      // ==== วาด Heatmap ====
+      function drawHeatmap() {
+        const {width: w, height: h} = ctxHeatmap.canvas;
+        const plotHeatmapH = h - PAD.B;
 
-    async function start(){
-      try{
-        btnStart.disabled=true; btnStop.disabled=false;
-        const constraints = {
-          audio:{
-            echoCancellation: ec.checked ? false : true,
-            noiseSuppression: ns.checked ? false : true,
-            autoGainControl: agc.checked ? false : true
+        if (!freqArray || !heatmapFreqBinMap) return;
+
+        // สร้างแถบข้อมูลใหม่โดยใช้ bins ที่คำนวณไว้แล้ว
+        const currentData = heatmapFreqBinMap.map(bin => {
+          let sum = 0;
+          let count = 0;
+          for (let j = bin.binStart; j <= bin.binEnd; j++) {
+            sum += freqArray[j];
+            count++;
+          }
+          const avgDb = count > 0 ? dbfs(sum / count) : -100;
+          return { db: avgDb, fStart: bin.fStart, fEnd: bin.fEnd };
+        });
+
+        // เพิ่มข้อมูลใหม่เข้าไปในอาเรย์
+        heatmapData.unshift(currentData);
+        if (heatmapData.length > maxHeatmapData) {
+          heatmapData.pop();
+        }
+
+        // วาด heatmap
+        const timeScale = plotHeatmapH / maxHeatmapData;
+        ctxHeatmap.clearRect(0, 0, w, h);
+        for (let i = 0; i < heatmapData.length; i++) {
+          const y = i * timeScale;
+          const frameData = heatmapData[i];
+          for (let j = 0; j < frameData.length; j++) {
+            const { fStart, fEnd, db } = frameData[j];
+            const xL = mapLogX(fStart, w);
+            const xR = mapLogX(fEnd, w);
+            const barWidth = Math.max(1, xR - xL);
+
+            ctxHeatmap.fillStyle = mapDbToColor(db);
+            ctxHeatmap.fillRect(xL, y, barWidth, timeScale);
+          }
+        }
+        
+        // วาดพื้นหลัง (กริดและป้ายกำกับ)
+        ctxHeatmap.clearRect(0, plotHeatmapH, w, PAD.B); // Clear area for labels
+        // แนวตั้ง log ticks
+        ctxHeatmap.strokeStyle = GRID_V;
+        const ticks = [20, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 2000, 4000, 8000, 16000];
+        ticks.forEach(t => {
+          const x = mapLogX(t, w);
+          ctxHeatmap.beginPath(); ctxHeatmap.moveTo(x, 0); ctxHeatmap.lineTo(x, plotHeatmapH); ctxHeatmap.stroke();
+        });
+        ctxHeatmap.fillStyle = LABEL;
+        ctxHeatmap.font = '12px system-ui';
+        ctxHeatmap.textBaseline = 'alphabetic';
+        [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000].forEach(t => {
+          const x = mapLogX(t, w);
+          ctxHeatmap.fillText(t >= 1000 ? (t / 1000) + 'k' : t, x - 8, h - LABEL_Y);
+        });
+
+        // วาดเส้น Cursor ทับบน Heatmap ถ้ามีการแตะค้างอยู่
+        if (guideHeatmap) {
+            drawHeatmapGuide(ctxHeatmap, guideHeatmap.xPx, h);
+        }
+      }
+
+      // ==== RMS ====
+      function updateRMS() {
+        if (!dataArray) return;
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          const v = (dataArray[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / dataArray.length);
+        const db = 20 * Math.log10(rms + 1e-12);
+        rmsEl.textContent = db.toFixed(1) + ' dBFS';
+      }
+
+      function loop() {
+        if (!running) return;
+        analyser.getByteTimeDomainData(dataArray);
+        analyser.getByteFrequencyData(freqArray);
+        if (avgChk.checked) {
+          if (!avgBuffer || avgBuffer.length !== freqArray.length) avgBuffer = new Float32Array(freqArray.length);
+          const alpha = 0.5;
+          for (let i = 0; i < freqArray.length; i++) {
+            avgBuffer[i] = alpha * avgBuffer[i] + (1 - alpha) * freqArray[i];
+            freqArray[i] = avgBuffer[i];
+          }
+        }
+        drawFFT();
+        drawOctave();
+        updateRMS();
+
+        const now = performance.now();
+        if (heatmapEnabled && (now - lastHeatmapUpdate >= HEATMAP_UPDATE_RATE_MS)) {
+          drawHeatmap();
+          lastHeatmapUpdate = now;
+        } else if (!heatmapEnabled) {
+          // ถ้า heatmap ถูกปิดอยู่ ให้เคลียร์ canvas
+          ctxHeatmap.clearRect(0, 0, heatmapCanvas.width, heatmapCanvas.height);
+          // วาด background และข้อความว่าปิดอยู่
+          ctxHeatmap.clearRect(0, 0, heatmapCanvas.width, heatmapCanvas.height);
+          drawHeatmapBackground(ctxHeatmap);
+          drawOverlayMessage(ctxHeatmap, heatmapCanvas.width, heatmapCanvas.height);
+        }
+
+        rafId = requestAnimationFrame(loop);
+      }
+      
+      async function start() {
+        try {
+          btnStart.disabled = true;
+          btnStop.disabled = false;
+          const constraints = {
+            audio: {
+              echoCancellation: ec.checked ? false : true,
+              noiseSuppression: ns.checked ? false : true,
+              autoGainControl: agc.checked ? false : true
+            }
+          };
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+          if (audioCtx.state === 'suspended') await audioCtx.resume();
+          sampleRate = audioCtx.sampleRate;
+          labelRate.textContent = `${Math.round(sampleRate)} Hz`;
+
+          analyser = audioCtx.createAnalyser();
+          analyser.fftSize = parseInt(fftSel.value, 10);
+          analyser.smoothingTimeConstant = parseFloat(smoothing.value);
+
+          micSrc = audioCtx.createMediaStreamSource(stream);
+          micSrc.connect(analyser);
+
+          dataArray = new Uint8Array(analyser.fftSize);
+          freqArray = new Uint8Array(analyser.frequencyBinCount);
+          peakArray = new Uint8Array(analyser.frequencyBinCount);
+
+          bands = genBands(octN);
+          peakOct = new Float32Array(bands.length);
+          heatmapFreqBinMap = genHeatmapBins();
+
+          heatmapData = [];
+          lastHeatmapUpdate = 0;
+          running = true;
+          loop();
+        } catch (err) {
+          console.error('เปิดไมโครโฟนไม่สำเร็จ: ' + (err.message || err));
+          btnStart.disabled = false;
+          btnStop.disabled = true;
+        }
+      }
+      function stop() {
+        running = false;
+        if (rafId) cancelAnimationFrame(rafId);
+        try { micSrc && micSrc.disconnect(); } catch {}
+        try { analyser && analyser.disconnect(); } catch {}
+        if (audioCtx) { audioCtx.close(); }
+        btnStart.disabled = false;
+        btnStop.disabled = true;
+      }
+      
+      // จัดการการแตะค้างเพื่อแสดงเส้นประ + ป้าย Hz
+      function attachPressGuide(canvas, tipEl, which) {
+        let pressed = false;
+        const getX = (e) => {
+          const rect = canvas.getBoundingClientRect();
+          const xCss = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+          return Math.max(PAD.L, Math.min(canvas.width - PAD.R, xCss * (canvas.width / rect.width)));
+        };
+        const update = (xPx) => {
+          const freq = xToFreq(xPx, canvas.width);
+          const plot = canvas.parentElement.getBoundingClientRect();
+          tipEl.style.display = 'block';
+          tipEl.textContent = fmtHz(freq);
+          const cssX = (xPx / canvas.width) * plot.width;
+          tipEl.style.left = cssX + 'px';
+          tipEl.style.top = '8px';
+          if (which === 'fft') guideFFT = { xPx, freq };
+          else if (which === 'oct') guideOCT = { xPx, freq };
+          else if (which === 'heatmap') {
+            guideHeatmap = { xPx, freq };
+            // วาดเส้น guide บน heatmap ทับบนข้อมูลเดิม
+            const h = heatmapCanvas.height;
+            const w = heatmapCanvas.width;
+            ctxHeatmap.clearRect(0, 0, w, h);
+            if (heatmapEnabled) {
+                drawHeatmap();
+            } else {
+                drawHeatmapBackground(ctxHeatmap);
+                drawOverlayMessage(ctxHeatmap, w, h);
+            }
+            drawHeatmapGuide(ctxHeatmap, guideHeatmap.xPx, h);
           }
         };
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        audioCtx = new (window.AudioContext||window.webkitAudioContext)({latencyHint:'interactive'});
-        if(audioCtx.state==='suspended') await audioCtx.resume();
+        const end = () => {
+          pressed = false;
+          tipEl.style.display = 'none';
+          if (which === 'fft') guideFFT = null;
+          else if (which === 'oct') guideOCT = null;
+          else if (which === 'heatmap') guideHeatmap = null;
+          // Re-draw to remove the guide line
+          if (running) {
+              if (which === 'fft') drawFFT();
+              else if (which === 'oct') drawOctave();
+              else if (which === 'heatmap') drawHeatmap();
+          }
+        };
 
-        sampleRate = audioCtx.sampleRate;
-        labelRate.textContent = `${Math.round(sampleRate)} Hz`;
+        canvas.addEventListener('mousedown', (e) => { pressed = true; update(getX(e)); }, {passive:true});
+        canvas.addEventListener('mousemove', (e) => { if (pressed) update(getX(e)); }, {passive:true});
+        canvas.addEventListener('mouseup', end, {passive:true});
+        canvas.addEventListener('mouseleave', end, {passive:true});
 
-        analyser = audioCtx.createAnalyser();
-        analyser.fftSize = parseInt(fftSel.value,10);
-        analyser.smoothingTimeConstant = parseFloat(smoothing.value);
-
-        micSrc = audioCtx.createMediaStreamSource(stream);
-        micSrc.connect(analyser);
-
-        dataArray = new Uint8Array(analyser.fftSize);
-        freqArray = new Uint8Array(analyser.frequencyBinCount);
-        peakArray = new Uint8Array(analyser.frequencyBinCount);
-
-        bands   = genBands(octN);
-        peakOct = new Float32Array(bands.length);
-
-        heatmapFreqBinMap = genHeatmapBins();
-        heatmapData = []; lastHeatmapUpdate=0;
-
-        running = true; loop();
-      }catch(err){
-        console.error(err);
-        alert('เปิดไมโครโฟนไม่สำเร็จ: ' + (err.message || err));
-        btnStart.disabled=false; btnStop.disabled=true;
+        canvas.addEventListener('touchstart', (e) => { pressed = true; update(getX(e)); }, {passive:true});
+        canvas.addEventListener('touchmove', (e) => { if (pressed) update(getX(e)); }, {passive:true});
+        canvas.addEventListener('touchend', end, {passive:true});
+        canvas.addEventListener('touchcancel', end, {passive:true});
       }
-    }
-    function stop(){
-      running=false; if(rafId) cancelAnimationFrame(rafId);
-      try{ micSrc && micSrc.disconnect(); }catch{}
-      try{ analyser && analyser.disconnect(); }catch{}
-      if(audioCtx){ audioCtx.close(); }
-      btnStart.disabled=false; btnStop.disabled=true;
-    }
 
-    // กดค้างเพื่อเส้นประ + ป้าย Hz
-    function attachPressGuide(canvas, tipEl, which){
-      let pressed=false;
-      const getX=(e)=>{
-        const rect=canvas.getBoundingClientRect();
-        const xCss=(e.touches?e.touches[0].clientX:e.clientX)-rect.left;
-        return Math.max(PAD.L, Math.min(canvas.width-PAD.R, xCss*(canvas.width/rect.width)));
-      };
-      const update=(xPx)=>{
-        const freq=xToFreq(xPx, canvas.width);
-        const plot=canvas.parentElement.getBoundingClientRect();
-        tipEl.style.display='block';
-        tipEl.textContent=fmtHz(freq);
-        tipEl.style.left=(xPx/canvas.width)*plot.width+'px';
-        tipEl.style.top='8px';
-        if(which==='fft') guideFFT={xPx,freq};
-        else if(which==='oct') guideOCT={xPx,freq};
-        else if(which==='heatmap'){ guideHeatmap={xPx,freq}; drawHeatmap(); }
-      };
-      const clear=()=>{
-        tipEl.style.display='none';
-        if(which==='fft') guideFFT=null;
-        else if(which==='oct') guideOCT=null;
-        else if(which==='heatmap'){ guideHeatmap=null; drawHeatmap(); }
-      };
-      const onDown=(e)=>{ pressed=true; e.preventDefault(); update(getX(e)); };
-      const onMove=(e)=>{ if(!pressed) return; e.preventDefault(); update(getX(e)); };
-      const onUp=()=>{ pressed=false; clear(); };
+      // Hook up UI
+      window.addEventListener('load', () => {
+        btnStart.addEventListener('click', start, {passive:true});
+        btnStop .addEventListener('click', stop , {passive:true});
+        btnHold .addEventListener('click', ()=>{
+          holdEnabled=!holdEnabled;
+          btnHold.setAttribute('aria-pressed', String(holdEnabled));
+          btnHold.textContent = holdEnabled ? '📌 Hold Peak: ON' : '📌 Hold Peak: OFF';
+        }, {passive:true});
+        btnClear.addEventListener('click', ()=>{
+          if(peakArray) peakArray.fill(0);
+          if(peakOct)   peakOct.fill(0);
+        }, {passive:true});
+        fftSel.addEventListener('change', ()=>{
+          if(!analyser) return;
+          analyser.fftSize=parseInt(fftSel.value,10);
+          dataArray=new Uint8Array(analyser.fftSize);
+          freqArray=new Uint8Array(analyser.frequencyBinCount);
+          peakArray=new Uint8Array(analyser.frequencyBinCount);
+          // รีคำนวณย่านตาม octN เดิม
+          bands = genBands(octN);
+          peakOct = new Float32Array(bands.length);
+        });
+        smoothing.addEventListener('input', ()=>{ if(analyser) analyser.smoothingTimeConstant=parseFloat(smoothing.value); });
+        avgChk.addEventListener('change', () => { avgBuffer = null; });
+        aWeightChk.addEventListener('change', () => { drawOctave(); });
 
-      canvas.addEventListener('touchstart', onDown, {passive:false});
-      canvas.addEventListener('touchmove',  onMove, {passive:false});
-      canvas.addEventListener('touchend',   onUp,   {passive:true});
-      canvas.addEventListener('mousedown',  onDown);
-      window.addEventListener('mousemove',  onMove);
-      window.addEventListener('mouseup',    onUp);
-      canvas.addEventListener('contextmenu', e=>e.preventDefault());
-    }
-    attachPressGuide(fftCanvas, fftTip, 'fft');
-    attachPressGuide(octCanvas, octTip, 'oct');
-    attachPressGuide(heatmapCanvas, heatmapTip, 'heatmap');
+        // เปลี่ยนโหมด 1/3 ↔ 1/6
+        octResSel.addEventListener('change', ()=>{
+          octN = parseInt(octResSel.value,10);         // 3 หรือ 6
+          bands = genBands(octN);
+          peakOct = new Float32Array(bands.length);    // รีเซ็ต hold
+          if (running) drawOctave();
+        });
+        
+        // เพิ่ม event listener สำหรับแกน Y
+        yScaleOctSel.addEventListener('change', () => {
+            yScaleOctMode = yScaleOctSel.value;
+            // รีเซ็ต peak hold เมื่อเปลี่ยนโหมด
+            if (peakOct) peakOct.fill(0);
+            if (running) drawOctave();
+            octTitle.textContent = `RTA แบบ 1/${octN} Octave (${yScaleOctMode === 'dbfs' ? 'Log Axis' : 'Linear Axis'})`;
+        });
+        
+        btnToggleHeatmap.addEventListener('click', () => {
+            heatmapEnabled = !heatmapEnabled;
+            btnToggleHeatmap.setAttribute('aria-pressed', String(heatmapEnabled));
+            btnToggleHeatmap.textContent = heatmapEnabled ? '🔥 Heatmap: ON' : '🔥 Heatmap: OFF';
+            if (!heatmapEnabled) {
+                // ถ้าปิด ให้เคลียร์ canvas ทันที
+                const { width: w, height: h } = ctxHeatmap.canvas;
+                ctxHeatmap.clearRect(0, 0, w, h);
+                drawHeatmapBackground(ctxHeatmap);
+                drawOverlayMessage(ctxHeatmap, w, h);
+            } else {
+                // ถ้าเปิด ให้เริ่มวาดใหม่
+                lastHeatmapUpdate = 0;
+            }
+        }, {passive:true});
+        
+        attachPressGuide(fftCanvas, fftTip, 'fft');
+        attachPressGuide(octCanvas, octTip, 'oct');
+        attachPressGuide(heatmapCanvas, heatmapTip, 'heatmap');
+        
+        // Initial drawing
+        drawFFTBackground(ctxFFT);
+        drawOctaveBackground(ctxOct);
+        drawHeatmapBackground(ctxHeatmap);
+        drawOverlayMessage(ctxHeatmap, heatmapCanvas.width, heatmapCanvas.height);
+      });
+      
+      function drawHeatmapBackground(ctx) {
+        const {width: w, height: h} = ctx.canvas;
+        const plotHeatmapH = h - PAD.B;
+        ctx.clearRect(0, 0, w, h);
+        
+        // Horizontal lines (dummy for heatmap)
+        ctx.strokeStyle = GRID_H;
+        for (let i = 0; i < 6; i++) {
+          const y = (i / 5) * plotHeatmapH;
+          ctx.beginPath(); ctx.moveTo(PAD.L, y); ctx.lineTo(w - PAD.R, y); ctx.stroke();
+        }
 
-    // Events
-    btnStart.addEventListener('click', start);
-    btnStop .addEventListener('click', stop);
-    btnHold .addEventListener('click', ()=>{
-      holdEnabled=!holdEnabled;
-      btnHold.setAttribute('aria-pressed', String(holdEnabled));
-      btnHold.textContent = holdEnabled ? '📌 Hold Peak: ON' : '📌 Hold Peak: OFF';
-    });
-    btnClear.addEventListener('click', ()=>{
-      if(peakArray) peakArray.fill(0);
-      if(peakOct)   peakOct.fill(0);
-      heatmapData=[];
-      drawHeatmap(); // รีเฟรชแคนวาส
-    });
-    btnToggleHeatmap.addEventListener('click', ()=>{
-      heatmapEnabled=!heatmapEnabled;
-      btnToggleHeatmap.setAttribute('aria-pressed', String(heatmapEnabled));
-      btnToggleHeatmap.textContent = heatmapEnabled ? '🔥 Heatmap: ON' : '🔥 Heatmap: OFF';
-    });
-    fftSel.addEventListener('change', ()=>{
-      if(!analyser) return;
-      analyser.fftSize = parseInt(fftSel.value,10);
-      dataArray = new Uint8Array(analyser.fftSize);
-      freqArray = new Uint8Array(analyser.frequencyBinCount);
-      peakArray = new Uint8Array(analyser.frequencyBinCount);
-      bands   = genBands(octN);
-      peakOct = new Float32Array(bands.length);
-      heatmapFreqBinMap = genHeatmapBins();
-      heatmapData=[]; drawHeatmap();
-    });
-    smoothing.addEventListener('input', ()=>{ if(analyser) analyser.smoothingTimeConstant=parseFloat(smoothing.value); });
-    octResSel.addEventListener('change', ()=>{
-      octN = parseInt(octResSel.value,10);
-      bands   = genBands(octN);
-      peakOct = new Float32Array(bands.length);
-    });
+        // Vertical lines (log ticks)
+        ctx.strokeStyle = GRID_V;
+        const ticks = [20, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 2000, 4000, 8000, 16000];
+        ticks.forEach(t => {
+          const x = mapLogX(t, w);
+          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, plotHeatmapH); ctx.stroke();
+        });
 
-    // อนุญาต select/โฟกัสเฉพาะคอนโทรล (กันไฮไลต์ตอนลากบนมือถือ)
-    ['input','select','button','label'].forEach(sel=>{
-      document.querySelectorAll(sel).forEach(el=>{ el.style.webkitUserSelect='auto'; });
-    });
-  })();
+        // Frame
+        ctx.strokeStyle = FRAME;
+        ctx.strokeRect(PAD.L, 0, w - PAD.L - PAD.R, plotHeatmapH);
+
+        // X-axis labels
+        ctx.fillStyle = LABEL;
+        ctx.font = '12px system-ui';
+        ctx.textBaseline = 'alphabetic';
+        [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000].forEach(t => {
+          const x = mapLogX(t, w);
+          ctx.fillText(t >= 1000 ? (t / 1000) + 'k' : t, x - 8, h - LABEL_Y);
+        });
+      }
+
+    })();
   </script>
 </body>
 </html>
