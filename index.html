@@ -231,9 +231,10 @@
 
   // Heatmap state
   let heatmapData = [];
-  const maxHeatmapData = 200; // ปรับลดลงเพื่อประสิทธิภาพที่ดีขึ้นบนมือถือ
+  const maxHeatmapData = 200; // จำนวนแถวในฮีทแมพ
   const heatmapHeight = 320; // Canvas height
   const plotHeatmapH = heatmapHeight - PAD.B;
+  const heatmapFreqBins = 300; // เพิ่มความละเอียดของความถี่เป็น 300 แถบ
 
   // ==== Helpers ====
   const dbfs = v => 20*Math.log10(v/255 + 1e-12);
@@ -241,15 +242,16 @@
   function aWeighting(f){ const f2=f*f; const ra=(12200**2*f2**2)/((f2+20.6**2)*(f2+12200**2)*Math.sqrt((f2+107.7**2)*(f2+737.9**2))); return 20*Math.log10(ra)+2.0; }
   function fmtHz(f){ return f>=1000 ? ((f/1000>=10? (f/1000).toFixed(0):(f/1000).toFixed(1))+' kHz') : (Math.round(f)+' Hz'); }
   const fmax = () => Math.min(sampleRate/2, 20000);
+  const fmin = 20;
 
   // map <-> screen
   function mapLogX(f, width){
-    const fmin=20, fm=fmax();
+    const fm=fmax();
     const t=(Math.log10(Math.max(f,fmin))-Math.log10(fmin))/(Math.log10(fm)-Math.log10(fmin));
     return PAD.L + t * (width - PAD.L - PAD.R);
   }
   function xToFreq(x, width){
-    const fmin=20, fm=fmax();
+    const fm=fmax();
     const plotW = width - PAD.L - PAD.R;
     const t = clamp01((x - PAD.L)/plotW);
     const lf = Math.log10(fmin) + t*(Math.log10(fm)-Math.log10(fmin));
@@ -279,7 +281,7 @@
   // สร้างย่านแบบ 1/n octave (ศูนย์อิง 1 kHz)
   function genBands(n){
     const r = Math.pow(2, 1/n);                 // factor ต่อหนึ่งย่าน
-    const fmin = 20, fm = fmax();
+    const fm = fmax();
     const kmin = Math.ceil( Math.log(fmin/1000) / Math.log(r) );
     const kmax = Math.floor( Math.log(fm/1000)   / Math.log(r) );
     const edgeHalf = Math.pow(2, 1/(2*n));      // ครึ่งหนึ่งของความกว้างย่าน
@@ -477,21 +479,41 @@
   // ==== วาด Heatmap ====
   function drawHeatmap() {
     const {width:w} = ctxHeatmap.canvas;
+    const fmaxVal = fmax();
     const fpb = sampleRate / analyser.fftSize;
 
-    // เพิ่มข้อมูลปัจจุบันลงใน array โดยคำนวณ dBFS สำหรับแต่ละ bin
+    // สร้างแถบความถี่ใหม่เพื่อลดความละเอียด
     const currentData = [];
-    const numBins = analyser.frequencyBinCount; // ใช้จำนวน bin ทั้งหมดจาก analyser
-    const fmin = 20, fm = fmax();
-    for (let i = 0; i < numBins; i++) {
-        const f = i * fpb;
-        if (f >= fmin && f <= fm) {
-            currentData.push({
-                freq: f,
-                db: dbfs(freqArray[i])
-            });
+    const logFmin = Math.log10(fmin);
+    const logFmax = Math.log10(fmaxVal);
+    
+    for (let i = 0; i < heatmapFreqBins; i++) {
+        // คำนวณความถี่เริ่มต้นและสิ้นสุดของแถบใหม่แบบ Logarithmic
+        const logFStart = logFmin + (i / heatmapFreqBins) * (logFmax - logFmin);
+        const logFEnd = logFmin + ((i + 1) / heatmapFreqBins) * (logFmax - logFmin);
+        const fStart = Math.pow(10, logFStart);
+        const fEnd = Math.pow(10, logFEnd);
+
+        // หา bin ใน array ต้นฉบับที่ตรงกับช่วงความถี่นี้
+        const binStart = Math.max(0, Math.floor(fStart / fpb));
+        const binEnd = Math.min(analyser.frequencyBinCount - 1, Math.ceil(fEnd / fpb));
+
+        let sum = 0;
+        let count = 0;
+        for (let j = binStart; j <= binEnd; j++) {
+            sum += freqArray[j];
+            count++;
         }
+        
+        const avgDb = count > 0 ? dbfs(sum / count) : -100;
+        
+        currentData.push({
+            freqStart: fStart,
+            freqEnd: fEnd,
+            db: avgDb
+        });
     }
+
     heatmapData.unshift(currentData);
     if (heatmapData.length > maxHeatmapData) {
         heatmapData.pop();
@@ -501,17 +523,16 @@
     
     const timeScale = plotHeatmapH / maxHeatmapData;
 
-    // Draw the heatmap data with logarithmic x-axis
+    // วาด heatmap
     for (let i = 0; i < heatmapData.length; i++) {
       const y = i * timeScale;
       const frameData = heatmapData[i];
       for (let j = 0; j < frameData.length; j++) {
-        const { freq, db } = frameData[j];
+        const { freqStart, freqEnd, db } = frameData[j];
         
         // คำนวณตำแหน่งและขนาดของ bar โดยใช้ logarithmic scale
-        const xL = mapLogX(freq, w);
-        const nextFreq = (j + 1) * fpb;
-        const xR = mapLogX(nextFreq, w);
+        const xL = mapLogX(freqStart, w);
+        const xR = mapLogX(freqEnd, w);
         const barWidth = Math.max(1, xR - xL);
 
         ctxHeatmap.fillStyle = mapDbToColor(db);
@@ -519,7 +540,7 @@
       }
     }
     
-    // Draw background and labels on top of the heatmap
+    // วาดพื้นหลังและป้ายกำกับ
     drawHeatmapBackground(ctxHeatmap);
   }
 
