@@ -152,6 +152,11 @@
         <div class="plot">
           <canvas id="heatmapCanvas" width="1200" height="320"></canvas>
         </div>
+        <div class="row" style="margin-top:8px">
+          <label for="heatmapRate">Heatmap Update Rate: <span id="heatmapRateVal">100</span> ms
+            <input id="heatmapRate" type="range" min="33" max="500" step="1" value="100">
+          </label>
+        </div>
       </div>
     </div>
     
@@ -209,6 +214,9 @@
   const peakEl= document.getElementById('peak');
   const octResSel = document.getElementById('octRes');
 
+  const heatmapRateEl = document.getElementById('heatmapRate');
+  const heatmapRateValEl = document.getElementById('heatmapRateVal');
+
   // Audio state
   let audioCtx, analyser, micSrc, rafId;
   let dataArray, freqArray;
@@ -234,7 +242,9 @@
   const maxHeatmapData = 200; // จำนวนแถวในฮีทแมพ
   const heatmapHeight = 320; // Canvas height
   const plotHeatmapH = heatmapHeight - PAD.B;
-  const heatmapFreqBins = 300; // เพิ่มความละเอียดของความถี่เป็น 300 แถบ
+  const heatmapFreqBins = 300; // ความละเอียดของความถี่
+  let heatmapUpdateIntervalMs = parseInt(heatmapRateEl.value, 10);
+  let lastHeatmapUpdate = 0;
 
   // ==== Helpers ====
   const dbfs = v => 20*Math.log10(v/255 + 1e-12);
@@ -555,9 +565,10 @@
 
   function loop(){
     if(!running) return;
+
+    // Update FFT, Octave, and RMS on every frame
     analyser.getByteTimeDomainData(dataArray);
     analyser.getByteFrequencyData(freqArray);
-
     if(avgChk.checked){
       if(!avgBuffer || avgBuffer.length!==freqArray.length) avgBuffer=new Float32Array(freqArray.length);
       const alpha=0.5;
@@ -566,11 +577,16 @@
         freqArray[i]=avgBuffer[i];
       }
     }
-
     drawFFT();
     drawOctave();
     updateRMS();
-    drawHeatmap(); // Call heatmap drawing function
+
+    // Only update heatmap if the interval has passed
+    const now = performance.now();
+    if(now - lastHeatmapUpdate >= heatmapUpdateIntervalMs){
+        drawHeatmap(); 
+        lastHeatmapUpdate = now;
+    }
 
     rafId=requestAnimationFrame(loop);
   }
@@ -601,6 +617,8 @@
       bands = genBands(octN);
       peakOct = new Float32Array(bands.length);
 
+      heatmapData = []; // Clear heatmap on start
+      lastHeatmapUpdate = 0;
       running=true; loop();
     }catch(err){
       // Use a custom modal or message box instead of alert()
@@ -682,6 +700,12 @@
     octN = parseInt(octResSel.value,10);         // 3 หรือ 6
     bands = genBands(octN);
     peakOct = new Float32Array(bands.length);    // รีเซ็ต hold
+  });
+
+  // Heatmap rate control
+  heatmapRateEl.addEventListener('input', () => {
+      heatmapRateValEl.textContent = heatmapRateEl.value;
+      heatmapUpdateIntervalMs = parseInt(heatmapRateEl.value, 10);
   });
 
   // อนุญาต select/โฟกัสเฉพาะคอนโทรล (กันไฮไลต์ตอนลากบนมือถือ)
