@@ -153,6 +153,8 @@
         </div>
         <div class="plot">
           <canvas id="heatmapCanvas" width="1200" height="320"></canvas>
+          <!-- เพิ่ม div สำหรับแสดงค่าความถี่ของ heatmap -->
+          <div id="heatmapTip" class="tip" style="display:none">—</div>
         </div>
         <div class="row" style="margin-top:8px">
           <p class="hint">Heatmap Update Rate: 33 ms (Fixed)</p>
@@ -205,6 +207,7 @@
   const heatmapCanvas = document.getElementById('heatmapCanvas');
   const fftTip = document.getElementById('fftTip');
   const octTip = document.getElementById('octTip');
+  const heatmapTip = document.getElementById('heatmapTip'); // New heatmap tip element
   const ctxFFT = fftCanvas.getContext('2d');
   const ctxOct = octCanvas.getContext('2d');
   const ctxHeatmap = heatmapCanvas.getContext('2d');
@@ -231,6 +234,7 @@
   // เส้นประชั่วคราวตอนกดค้าง
   let guideFFT = null;
   let guideOCT = null;
+  let guideHeatmap = null; // New state for heatmap guide
 
   // Octave resolution state (n=3 -> 1/3, n=6 -> 1/6)
   let octN = 3;
@@ -291,11 +295,11 @@
 
   // สร้างย่านแบบ 1/n octave (ศูนย์อิง 1 kHz)
   function genBands(n){
-    const r = Math.pow(2, 1/n);                 // factor ต่อหนึ่งย่าน
+    const r = Math.pow(2, 1/n);             // factor ต่อหนึ่งย่าน
     const fm = fmax();
     const kmin = Math.ceil( Math.log(fmin/1000) / Math.log(r) );
     const kmax = Math.floor( Math.log(fm/1000)   / Math.log(r) );
-    const edgeHalf = Math.pow(2, 1/(2*n));      // ครึ่งหนึ่งของความกว้างย่าน
+    const edgeHalf = Math.pow(2, 1/(2*n));    // ครึ่งหนึ่งของความกว้างย่าน
 
     const arr = [];
     for(let k=kmin; k<=kmax; k++){
@@ -509,35 +513,35 @@
     const logFmax = Math.log10(fmaxVal);
     
     for (let i = 0; i < heatmapFreqBins; i++) {
-        // คำนวณความถี่เริ่มต้นและสิ้นสุดของแถบใหม่แบบ Logarithmic
-        const logFStart = logFmin + (i / heatmapFreqBins) * (logFmax - logFmin);
-        const logFEnd = logFmin + ((i + 1) / heatmapFreqBins) * (logFmax - logFmin);
-        const fStart = Math.pow(10, logFStart);
-        const fEnd = Math.pow(10, logFEnd);
+      // คำนวณความถี่เริ่มต้นและสิ้นสุดของแถบใหม่แบบ Logarithmic
+      const logFStart = logFmin + (i / heatmapFreqBins) * (logFmax - logFmin);
+      const logFEnd = logFmin + ((i + 1) / heatmapFreqBins) * (logFmax - logFmin);
+      const fStart = Math.pow(10, logFStart);
+      const fEnd = Math.pow(10, logFEnd);
 
-        // หา bin ใน array ต้นฉบับที่ตรงกับช่วงความถี่นี้
-        const binStart = Math.max(0, Math.floor(fStart / fpb));
-        const binEnd = Math.min(analyser.frequencyBinCount - 1, Math.ceil(fEnd / fpb));
+      // หา bin ใน array ต้นฉบับที่ตรงกับช่วงความถี่นี้
+      const binStart = Math.max(0, Math.floor(fStart / fpb));
+      const binEnd = Math.min(analyser.frequencyBinCount - 1, Math.ceil(fEnd / fpb));
 
-        let sum = 0;
-        let count = 0;
-        for (let j = binStart; j <= binEnd; j++) {
-            sum += freqArray[j];
-            count++;
-        }
-        
-        const avgDb = count > 0 ? dbfs(sum / count) : -100;
-        
-        currentData.push({
-            freqStart: fStart,
-            freqEnd: fEnd,
-            db: avgDb
-        });
+      let sum = 0;
+      let count = 0;
+      for (let j = binStart; j <= binEnd; j++) {
+        sum += freqArray[j];
+        count++;
+      }
+      
+      const avgDb = count > 0 ? dbfs(sum / count) : -100;
+      
+      currentData.push({
+        freqStart: fStart,
+        freqEnd: fEnd,
+        db: avgDb
+      });
     }
 
     heatmapData.unshift(currentData);
     if (heatmapData.length > maxHeatmapData) {
-        heatmapData.pop();
+      heatmapData.pop();
     }
 
     ctxHeatmap.clearRect(0, 0, w, heatmapHeight);
@@ -563,6 +567,12 @@
     
     // วาดพื้นหลังและป้ายกำกับ
     drawHeatmapBackground(ctxHeatmap);
+
+    // วาดเส้นไกด์บน heatmap ถ้ามีการกดค้าง
+    if(guideHeatmap){
+      // guideHeatmap จะถูกตั้งค่าจาก attachPressGuide
+      drawGuide(ctxHeatmap, guideHeatmap.xPx, heatmapHeight);
+    }
   }
 
   // ==== RMS ====
@@ -594,11 +604,22 @@
 
     // Only update heatmap if the interval has passed AND heatmap is enabled
     const now = performance.now();
-    if(heatmapEnabled && (now - lastHeatmapUpdate >= HEATMAP_UPDATE_RATE_MS)){
-        drawHeatmap(); 
+    if(heatmapEnabled){
+      if(now - lastHeatmapUpdate >= HEATMAP_UPDATE_RATE_MS){
+        drawHeatmap();  
         lastHeatmapUpdate = now;
+      } else {
+        // ถ้ายังไม่ถึงเวลาอัพเดตข้อมูล heatmap ให้วาดแค่ background และ guide เพื่อให้ responsive
+        ctxHeatmap.clearRect(0, 0, heatmapCanvas.width, heatmapCanvas.height);
+        drawHeatmapBackground(ctxHeatmap);
+        if(guideHeatmap){ drawGuide(ctxHeatmap, guideHeatmap.xPx, heatmapHeight); }
+      }
+    } else {
+      ctxHeatmap.clearRect(0, 0, heatmapCanvas.width, heatmapCanvas.height);
+      drawHeatmapBackground(ctxHeatmap);
+      drawOverlayMessage();
     }
-
+    
     rafId=requestAnimationFrame(loop);
   }
 
@@ -662,9 +683,18 @@
       const cssX = (xPx / canvas.width) * plot.width;
       tipEl.style.left = cssX + 'px';
       tipEl.style.top  = '8px';
-      if(which==='fft') guideFFT = {xPx, freq}; else guideOCT = {xPx, freq};
+
+      // Update the correct guide variable based on 'which'
+      if(which==='fft') guideFFT = {xPx, freq}; 
+      else if(which==='oct') guideOCT = {xPx, freq};
+      else if(which==='heatmap') guideHeatmap = {xPx, freq};
     };
-    const clear = () => { tipEl.style.display='none'; if(which==='fft') guideFFT=null; else guideOCT=null; };
+    const clear = () => { 
+      tipEl.style.display='none'; 
+      if(which==='fft') guideFFT=null; 
+      else if(which==='oct') guideOCT=null;
+      else if(which==='heatmap') guideHeatmap=null;
+    };
 
     const onDown = (e)=>{ pressed=true; e.preventDefault(); update(getX(e)); };
     const onMove = (e)=>{ if(!pressed) return; e.preventDefault(); update(getX(e)); };
@@ -680,6 +710,9 @@
   }
   attachPressGuide(fftCanvas, fftTip, 'fft');
   attachPressGuide(octCanvas, octTip, 'oct');
+  // New: Attach the guide functionality to the heatmap canvas
+  attachPressGuide(heatmapCanvas, heatmapTip, 'heatmap');
+
 
   // Events
   btnStart.addEventListener('click', start, {passive:true});
@@ -733,9 +766,9 @@
 
   // เปลี่ยนโหมด 1/3 ↔ 1/6
   octResSel.addEventListener('change', ()=>{
-    octN = parseInt(octResSel.value,10);         // 3 หรือ 6
+    octN = parseInt(octResSel.value,10);      // 3 หรือ 6
     bands = genBands(octN);
-    peakOct = new Float32Array(bands.length);    // รีเซ็ต hold
+    peakOct = new Float32Array(bands.length);   // รีเซ็ต hold
   });
 
   // อนุญาต select/โฟกัสเฉพาะคอนโทรล (กันไฮไลต์ตอนลากบนมือถือ)
