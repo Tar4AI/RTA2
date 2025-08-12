@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 
-  <title>Mobile RTA (เพิ่มเส้นตั้งพีค + กันขอบขาว iOS + 1/3·1/6 Octave + Heatmap) — FFT + Octave</title>
+  <title>Mobile RTA (เพิ่มเส้นตั้งพีค + Heatmap) — FFT + Octave</title>
 
   <style>
     :root{
@@ -145,9 +145,11 @@
       </div>
 
       <!-- Heatmap -->
-      <div class="card">
+      <div class="card" id="heatmapCard">
         <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:2px">
           <b>Spectrogram / Heatmap</b>
+          <!-- เพิ่มปุ่มสำหรับเปิด-ปิด heatmap -->
+          <button id="btnToggleHeatmap" class="ghost" aria-pressed="true">🔥 Heatmap: ON</button>
         </div>
         <div class="plot">
           <canvas id="heatmapCanvas" width="1200" height="320"></canvas>
@@ -183,6 +185,8 @@
   const btnStop  = document.getElementById('btnStop');
   const btnHold  = document.getElementById('btnHold');
   const btnClear = document.getElementById('btnClear');
+  const btnToggleHeatmap = document.getElementById('btnToggleHeatmap');
+
   const fftSel   = document.getElementById('fft');
   const smoothing= document.getElementById('smoothing');
   const avgChk   = document.getElementById('avg');
@@ -239,11 +243,10 @@
   const plotHeatmapH = heatmapHeight - PAD.B;
   const heatmapFreqBins = 300; // ความละเอียดของความถี่
   
-  // --- MODIFIED ---
-  // The update rate is now fixed at 33ms, removing the need for a slider
   const HEATMAP_UPDATE_RATE_MS = 33;
   let lastHeatmapUpdate = 0;
-  // --- /MODIFIED ---
+  
+  let heatmapEnabled = true;
 
   // ==== Helpers ====
   const dbfs = v => 20*Math.log10(v/255 + 1e-12);
@@ -484,6 +487,16 @@
     });
   }
 
+  // ==== วาดข้อความทับบน Canvas ====
+  function drawOverlayMessage() {
+    const {width:w, height:h} = ctxHeatmap.canvas;
+    ctxHeatmap.fillStyle = 'rgba(255, 255, 255, 0.4)';
+    ctxHeatmap.font = '24px system-ui';
+    ctxHeatmap.textAlign = 'center';
+    ctxHeatmap.textBaseline = 'middle';
+    ctxHeatmap.fillText('Heatmap OFF', w/2, h/2);
+  }
+
   // ==== วาด Heatmap ====
   function drawHeatmap() {
     const {width:w} = ctxHeatmap.canvas;
@@ -579,9 +592,9 @@
     drawOctave();
     updateRMS();
 
-    // Only update heatmap if the interval has passed
+    // Only update heatmap if the interval has passed AND heatmap is enabled
     const now = performance.now();
-    if(now - lastHeatmapUpdate >= HEATMAP_UPDATE_RATE_MS){
+    if(heatmapEnabled && (now - lastHeatmapUpdate >= HEATMAP_UPDATE_RATE_MS)){
         drawHeatmap(); 
         lastHeatmapUpdate = now;
     }
@@ -676,11 +689,36 @@
     btnHold.setAttribute('aria-pressed', String(holdEnabled));
     btnHold.textContent = holdEnabled ? '📌 Hold Peak: ON' : '📌 Hold Peak: OFF';
   }, {passive:true});
+  
+  // Update the clear button event to also clear the heatmap
   btnClear.addEventListener('click', ()=>{
     if(peakArray) peakArray.fill(0);
     if(peakOct)   peakOct.fill(0);
     heatmapData = [];
+    if (!heatmapEnabled) {
+      ctxHeatmap.clearRect(0, 0, heatmapCanvas.width, heatmapCanvas.height);
+      drawHeatmapBackground(ctxHeatmap);
+      drawOverlayMessage();
+    }
   }, {passive:true});
+
+  // Event for the new heatmap toggle button
+  btnToggleHeatmap.addEventListener('click', ()=>{
+    heatmapEnabled = !heatmapEnabled;
+    btnToggleHeatmap.setAttribute('aria-pressed', String(heatmapEnabled));
+    btnToggleHeatmap.textContent = heatmapEnabled ? '🔥 Heatmap: ON' : '🔥 Heatmap: OFF';
+    
+    // เมื่อปิด heatmap ให้เคลียร์ canvas และวาดข้อความว่าปิดอยู่
+    if (!heatmapEnabled) {
+      ctxHeatmap.clearRect(0, 0, heatmapCanvas.width, heatmapCanvas.height);
+      drawHeatmapBackground(ctxHeatmap);
+      drawOverlayMessage();
+    } else {
+      // เมื่อเปิดอีกครั้ง ให้เคลียร์ canvas เพื่อให้ loop เริ่มวาดใหม่
+      ctxHeatmap.clearRect(0, 0, heatmapCanvas.width, heatmapCanvas.height);
+    }
+  }, {passive:true});
+  
   fftSel.addEventListener('change', ()=>{
     if(!analyser) return;
     analyser.fftSize=parseInt(fftSel.value,10);
