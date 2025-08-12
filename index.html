@@ -153,9 +153,7 @@
           <canvas id="heatmapCanvas" width="1200" height="320"></canvas>
         </div>
         <div class="row" style="margin-top:8px">
-          <label for="heatmapRate">Heatmap Update Rate: <span id="heatmapRateVal">100</span> ms
-            <input id="heatmapRate" type="range" min="33" max="500" step="1" value="100">
-          </label>
+          <p class="hint">Heatmap Update Rate: 33 ms (Fixed)</p>
         </div>
       </div>
     </div>
@@ -214,9 +212,6 @@
   const peakEl= document.getElementById('peak');
   const octResSel = document.getElementById('octRes');
 
-  const heatmapRateEl = document.getElementById('heatmapRate');
-  const heatmapRateValEl = document.getElementById('heatmapRateVal');
-
   // Audio state
   let audioCtx, analyser, micSrc, rafId;
   let dataArray, freqArray;
@@ -243,8 +238,12 @@
   const heatmapHeight = 320; // Canvas height
   const plotHeatmapH = heatmapHeight - PAD.B;
   const heatmapFreqBins = 300; // ความละเอียดของความถี่
-  let heatmapUpdateIntervalMs = parseInt(heatmapRateEl.value, 10);
+  
+  // --- MODIFIED ---
+  // The update rate is now fixed at 33ms, removing the need for a slider
+  const HEATMAP_UPDATE_RATE_MS = 33;
   let lastHeatmapUpdate = 0;
+  // --- /MODIFIED ---
 
   // ==== Helpers ====
   const dbfs = v => 20*Math.log10(v/255 + 1e-12);
@@ -273,7 +272,6 @@
     return PAD.T + (1 - norm) * plotH;
   }
   // Map dB to a color for the heatmap (blue to yellow to red)
-  // ปรับให้มี 5 ระดับสีที่ชัดเจน
   function mapDbToColor(db) {
     if (db < -60) {
       return '#0b1220'; // ระดับ 1: มืด, เงียบมาก
@@ -583,7 +581,7 @@
 
     // Only update heatmap if the interval has passed
     const now = performance.now();
-    if(now - lastHeatmapUpdate >= heatmapUpdateIntervalMs){
+    if(now - lastHeatmapUpdate >= HEATMAP_UPDATE_RATE_MS){
         drawHeatmap(); 
         lastHeatmapUpdate = now;
     }
@@ -661,7 +659,7 @@
 
     canvas.addEventListener('touchstart', onDown, {passive:false});
     canvas.addEventListener('touchmove',  onMove,  {passive:false});
-    canvas.addEventListener('touchend',   onUp,    {passive:false});
+    canvas.addEventListener('touchend',   onUp,    {passive:true});
     canvas.addEventListener('mousedown',  onDown);
     window.addEventListener('mousemove',  onMove);
     window.addEventListener('mouseup',    onUp);
@@ -700,12 +698,6 @@
     octN = parseInt(octResSel.value,10);         // 3 หรือ 6
     bands = genBands(octN);
     peakOct = new Float32Array(bands.length);    // รีเซ็ต hold
-  });
-
-  // Heatmap rate control
-  heatmapRateEl.addEventListener('input', () => {
-      heatmapRateValEl.textContent = heatmapRateEl.value;
-      heatmapUpdateIntervalMs = parseInt(heatmapRateEl.value, 10);
   });
 
   // อนุญาต select/โฟกัสเฉพาะคอนโทรล (กันไฮไลต์ตอนลากบนมือถือ)
